@@ -49,8 +49,7 @@ using namespace FixConst;
 /* ---------------------------------------------------------------------- */
 
 FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg),
-  random(nullptr), array1(nullptr), nu(nullptr)
+  Fix(lmp, narg, arg), nu(nullptr)
 {
 
   // IS THE NUMBER OF ARGUMENTS CORRECT? //
@@ -63,52 +62,41 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
   // SOME FLAGS... worry about later //
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world,&nprocs);
+
+  // maybe used later
   dynamic_group_allow = 1;
-  force_reneighbor = 1;
-  next_reneighbor = -1;
-  vector_flag = 1;
-  size_vector = 2;
-  global_freq = 1;
-  extvector = 0;
-  seed = 1234;
-  ilevel_respa = 0;
+
+  // for passing virial contributions
   virial_global_flag = 1;
   virial_peratom_flag = 1;
-  energy_global_flag = 1;
+  thermo_virial = 1;
+
+  // for having a peratom array related to this fix
   peratom_flag = 1;
   size_peratom_cols = 4;
+  
+  // used later to setup
   countflag = 0;
 
-
-  // initialize Marsaglia RNG with processor-unique seed
-  // THIS IS FOR RANDOM NUMBER GENERATION 
-  random = new RanMars(lmp,seed + me);
-
   // INITIALIZE ANY LOCAL ARRAYS //
-  array1 = nullptr;
-  nmax = atom->nmax;
   nu = nullptr;
 
+  nmax = atom->nmax;
+
+  // for allocating space to array_atom
   FixEntangle::grow_arrays(atom->nmax);
   atom->add_callback(Atom::GROW);
 
-  if (/*peratom_flag*/ 1) {
+  if (peratom_flag) {
     init_myarray();
   }
-
-  comm_forward = 4;
-
-
 }
 
 /* ---------------------------------------------------------------------- */
 
 FixEntangle::~FixEntangle()
 {
-  delete random;
-
   // delete locally stored arrays
-  memory->destroy(array1);
   memory->destroy(nu);
 
   // DELETE CALL TO FIX PROPERTY/ATOM //
@@ -123,7 +111,6 @@ int FixEntangle::setmask()
 {
   int mask = 0;
   mask |= POST_FORCE;
-  mask |= POST_FORCE_RESPA;
   return mask;
 }
 
@@ -138,21 +125,19 @@ void FixEntangle::post_constructor()
   // RETURN THE INDEX OF OUR LOCALLY STORED ATOM ARRAY //
   int tmp1, tmp2;
   index = atom->find_custom(utils::strdup(std::string("nvar_")+id),tmp1,tmp2);
-  double **nvar = atom->darray[index];
-
-
-  nmax = atom->nmax;
 
   // nvar IS THE POINTER TO OUR STATE VARIABLE ARRAY! //
+  double **nvar = atom->darray[index];
   
   // "printcounter" is later used for printing custom messages every Nth timestep
   int printcounter = 1;
 
-  int *mask = atom->mask;
+  // accessing atom count data
   int nlocal = atom->nlocal;
   int nghost = atom->nghost;
   int nall = nlocal + nghost;
   
+  int *mask = atom->mask;
 
 
   // ! INITIALIZE OUR NEW STATE VARIABLE ! //
@@ -175,23 +160,7 @@ void FixEntangle::post_constructor()
 
 void FixEntangle::init()
 {
-  if (utils::strmatch(update->integrate_style, "^respa")) {
-    nlevels_respa = (dynamic_cast<Respa *>(update->integrate))->nlevels;
-    if (respa_level >= 0)
-      ilevel_respa = MIN(respa_level, nlevels_respa - 1);
-    else
-      ilevel_respa = nlevels_respa - 1;
-  }
 
-  // need a full neighbor list, built at request
-  //neighbor->add_request(this, NeighConst::REQ_FULL);
-}
-
-/* ---------------------------------------------------------------------- */
-
-void FixEntangle::init_list(int /*id*/, NeighList *ptr)
-{
-  list = ptr;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -200,15 +169,9 @@ void FixEntangle::setup(int vflag)
 {
   if (utils::strmatch(update->integrate_style, "^verlet")){
     post_force(vflag);
-  }else
-    for (int ilevel = 0; ilevel < nlevels_respa; ilevel++) {
-      (dynamic_cast<Respa *>(update->integrate))->copy_flevel_f(ilevel);
-      post_force_respa(vflag, ilevel, 0);
-      (dynamic_cast<Respa *>(update->integrate))->copy_f_flevel(ilevel);
-    }
+  }
 
   // Only run this in the beginning of simulation (transferring nvar data from velocities to actual peratom array)
-
   if (countflag) return;
   countflag = 1;
 
@@ -216,19 +179,14 @@ void FixEntangle::setup(int vflag)
   int tmp1, tmp2;
   double **nvar = atom->darray[index];
 
-  // THIS WILL ONLY ACTUALLY RUN ONCE!  //
-  tagint *tag = atom->tag;
+  // accessing per-atom velocities and radius because the contain nvar (from data file)
   double **v = atom->v;
   double *radius = atom->radius;
-  int nlocal = atom->nlocal;
-  tagint *molecule = atom->molecule;
 
-  // BOND INFORMATION
-  int *num_bond = atom->num_bond;
-  int **bond_type = atom->bond_type;
-  tagint **bond_atom = atom->bond_atom;
+  // local atom count
+  int nlocal = atom->nlocal;
   
-  // nvar = [Leftside monomer count | Rightside monomer count | dangling end flag or Anchor point timer | chain tagID]
+  // [nvar] = [Leftside monomer count | Rightside monomer count | dangling end flag or Anchor point timer | chain tagID]
   for (int i = 0; i < nlocal; i++) {
     nvar[i][0] = v[i][0];
     nvar[i][1] = v[i][1];
@@ -245,23 +203,29 @@ void FixEntangle::setup(int vflag)
 
  void FixEntangle::post_force(int vflag)
 {
- 
-  // DEFINE ALL OF YOUR TEMPORARY VARIABLES HERE //
-  double fbond1,fbond2,fm;
-  
 
   // ATOM COUNTS
   int nlocal = atom->nlocal;
   int nghost = atom->nghost;
   int nall = nlocal + nghost;
 
-  // Possibly resize arrays
+  // basic atom information
+  double **x = atom->x;
+  double **v = atom->v;
+  tagint *tag = atom->tag;
+  int *mask = atom->mask;
+  int *type = atom->type;
+  double **f = atom->f;
+  tagint *molecule = atom->molecule;
+
+  // Possibly resize array "nu"
   if (atom->nmax > nmax) {
     memory->destroy(nu);
     nmax = atom->nmax;
     memory->create(nu,nmax,2,"entangle:nu");
   }
-
+  
+  // Initialize array "nu"
   for (int i = 0; i < nall; i++){
     for (int j = 0; j < 2; j++){
       nu[i][j] = 0.0;
@@ -275,8 +239,7 @@ void FixEntangle::setup(int vflag)
   double *N1_0 = new double[nlocal];
   double *N2_0 = new double[nlocal];
 
-  // Our state variable
-  int tmp1, tmp2;
+  // Our state variable "nvar"
   double **nvar = atom->darray[index];
 
   // BOND INFORMATION
@@ -284,12 +247,6 @@ void FixEntangle::setup(int vflag)
   int **bond_type = atom->bond_type;
   tagint **bond_atom = atom->bond_atom;
   
-
-  double **forcearray = atom->f;
-
-  // SPECIAL NEIGHBORS
-  int **nspecial = atom->nspecial;
-  tagint **special = atom->special;
 
   // DON'T PROCEED IF THE TIMESTEP IS NOT A MULTIPLE OF NEVERY
   if (update->ntimestep % nevery) return;
@@ -299,59 +256,27 @@ void FixEntangle::setup(int vflag)
   // necessary b/c are calling this after integrate, but before Verlet comm
   comm->forward_comm();
 
-  // basic atom information
-  double **x = atom->x;
-  double **v = atom->v;
-  tagint *tag = atom->tag;
-  int *mask = atom->mask;
-  int *type = atom->type;
-  Bond *bond = force->bond;
-  double **f = atom->f;
-  tagint *molecule = atom->molecule;
-  int **bondlist = neighbor->bondlist;
-  int nbondlist = neighbor->nbondlist;
-  int Left_previous = 0;
-  int Right_previous = 0;
-  int tag_previous = 0;
-  int n,m,k,l,s;
-  int LHS_i;
-  tagint LHS_tagi,RHS_tagi;
-  int RHS_i;
-  int endpoint;
-  int ENT_COUNT;
-  int ENT_pair;
-  int jj,kk;
-  int realnext;
-  int mm;
-  double Rzero1,Rzero2;
+  // used later to average sliding rate
   double AVGnu=0;
-  double nprev;
+
+  // used later for passing virial contribution of fix entangle
   double P[6];
-  double S[6];
+
+  // aquire timestep size for integration
   double dt = update->dt;
 
-  for (int i=0; i<nlocal; i++){
-    if (printcounter%10000==0){
-      //printf("Timestep : %ld    Atom id : (Global : %d  ,  Local : %d)   Molecule ID: %d  TAG ID : %f  Dang_flag : %f\n\n",update->ntimestep,tag[i],i,molecule[i],nvar[i][3],nvar[i][2]);
-    }
-  }
-
-  
+  // initialize for later use of dumping nvar in a way to visualize tension of chains
   for (int i=1 ; i<nlocal; i++){
     if (printcounter == 1){
         N1_0[i] = nvar[i][0]/N_rest1[i];
         N2_0[i] = nvar[i][1]/N_rest2[i];
     }
   }
-        
-  if (peratom_flag) {
-    init_myarray();
-  }
 
 
 
   //loop over all entanglement points to calculate forces and then the monomer sliding rates
-  for (i = 0; i < nlocal; i++) { 
+  for (int i = 0; i < nlocal; i++) { 
 
     // Check if the atom is in the correct group... keep for generality
     if (!(mask[i] & groupbit)) continue;
@@ -379,11 +304,6 @@ void FixEntangle::setup(int vflag)
     // force magnitudes
     double fbond1 = 0;
     double fbond2 = 0;
-
-    // second to last and second entanglements flag used later
-    int secondflag = 0;
-    int secondtolastflag = 0;
-    
 
     //We need a loop to go over columns of bond_atom because each atom is connected to three/one particles to find the left-hand side atom and right-hand side atom to aquire their vectorial distances.
     //We have used the tagID here to find the previous and next atoms (stored in nvar[*][3] for each atom)
@@ -430,42 +350,34 @@ void FixEntangle::setup(int vflag)
     // calculate the Rzero1 and Rzero2 as equilibrium length of each sides based on their number of monomers
     double Ncube1 = nvar[i][0]*nvar[i][0]*nvar[i][0];
     double Ncube2 = nvar[i][1]*nvar[i][1]*nvar[i][1];
-    Rzero1 = pow(Ncube1,0.2);
-    Rzero2 = pow(Ncube2,0.2);
+    double Rzero1 = pow(Ncube1,0.2);
+    double Rzero2 = pow(Ncube2,0.2);
 
 
     // here we calculate the force components from the left and right hand side sub-chains 
 
-    if(r1!=0){ // if length of a sub-chain is zero it means that particle is the head of a dangling end
-      //if (r1>Rzero1){ // if atom is the second atom in the chain the force of dangling end side is always zero
+    if(r1!=0){ // if length of a sub-chain is zero it means that particle is the anchorpoint of a dangling end
         fbond1x = (3 * 1) * (delx1 / nvar[i][0]) - 3 * (nvar[i][0]*nvar[i][0])/(r1*r1*r1*r1) * delx1/r1;       //(k * T) / (b * b) = 1
         fbond1y = (3 * 1) * (dely1 / nvar[i][0]) - 3 * (nvar[i][0]*nvar[i][0])/(r1*r1*r1*r1) * dely1/r1;       //(k * T) / (b * b) = 1
         fbond1z = (3 * 1) * (delz1 / nvar[i][0]) - 3 * (nvar[i][0]*nvar[i][0])/(r1*r1*r1*r1) * delz1/r1;  
-      //}
     }
 
 
-    if(r2!=0){ // if length of a sub-chain is zero it means that particle is the head of a dangling end
-      //if (r2>Rzero2){ // if atom is the second atom in the chain the force of dangling end side is always zero
+    if(r2!=0){ // if length of a sub-chain is zero it means that particle is the anchorpoint of a dangling end
         fbond2x = (3 * 1) * (delx2 / nvar[i][1]) - 3 * (nvar[i][1]*nvar[i][1])/(r2*r2*r2*r2) * delx2/r2;       //(k * T) / (b * b) = 1
         fbond2y = (3 * 1) * (dely2 / nvar[i][1]) - 3 * (nvar[i][1]*nvar[i][1])/(r2*r2*r2*r2) * dely2/r2;       //(k * T) / (b * b) = 1
         fbond2z = (3 * 1) * (delz2 / nvar[i][1]) - 3 * (nvar[i][1]*nvar[i][1])/(r2*r2*r2*r2) * delz2/r2;
-      //}
     }
 
     //Used to print custom stuff
     if ((printcounter % 10000)==0){
-      //printf("id:%d   f1 = %f , %f   f2 = %f , %f  rzeros : %f %f   r1:%f r2:%f\n",i+1,fbond1x,fbond1y,fbond2x,fbond2y,Rzero1,Rzero2,r1,r2);
-      //printf("id:%d      nvar: [%f %f %f %f]\n",i+1,nvar[i][0],nvar[i][1],nvar[i][2],nvar[i][3]);
-      // ...
+      // ......
     }
     
     // sliding friction coefficient
     double zeta = 1;
 
-
-    // here we pass the sum of the forces on each particle to the f[] array for use of other fixes (except when particle is a dangling end head)
-    // if the particle is a dangling end head we will integrate it's motion manually here and it also doesn't contribute to virial stress
+    // here we pass the sum of the forces on each particle to the f[] array for use of other fixes
     // we also calculate the virial contributions and pass them via vtally()
     f[i][0] += (fbond1x + fbond2x);
     f[i][1] += (fbond1y + fbond2y);
@@ -474,9 +386,7 @@ void FixEntangle::setup(int vflag)
 
     if (evflag) {
       P[0] += (abs(delx1*fbond1x) + abs(delx2*fbond2x));
-      //P[0] += sqrt(fbond1x * fbond1x + fbond1y * fbond1y) * 50 * 50 * 4;
       P[1] += (abs(dely1*fbond1y) + abs(dely2*fbond2y));
-      //P[1] += sqrt(fbond1x * fbond1x + fbond1y * fbond1y) * 50 * 50 * 4;
       P[2] += (abs(delz1*fbond1z) + abs(delz2*fbond2z));
       P[3] += (abs(delx1*fbond1y) + abs(delx2*fbond2y));
       P[4] += (abs(delx1*fbond1z) + abs(delx2*fbond2z));
@@ -501,7 +411,6 @@ void FixEntangle::setup(int vflag)
     }
 
     double Fm = fbond2-fbond1;
-    double Fr = random->gaussian(0,2*zeta);
 
     // difference of tension from two sides is used to calculate monomer sliding rate at that entanglement
     double nu_rate = Fm / zeta; 
@@ -533,21 +442,12 @@ void FixEntangle::setup(int vflag)
     AVGnu = AVGnu + (sqrt(nu_rate*nu_rate))/nlocal; 
   }
 
-  if ((update->ntimestep % 100)==0){
-    //printf("%ld %f  %f  %f\n",update->ntimestep,S[0],S[1],S[3]);
-    //printf("%f\n",AVGnu);
-  }
-
   // reverse communication of nu so ghost atoms aquire their sliding rates
   comm->reverse_comm(this,2);
 
-  // Here we run thr second loop to integrate the monomer counts after one timestep of sliding
-  //   int DIS_flag = 0;
-
-  for (i = 0; i < nlocal; i++) {
-
-    // array_atom is a per-atom array which can be dumped for visualization purposes in ovito
-    if(1/*peratom_flag*/){
+  // array_atom is a per-atom array which can be dumped for visualization purposes in ovito
+  for (int i = 0; i < nlocal; i++) {
+    if(peratom_flag){
       if(N_rest1[i]!=0){  
       array_atom[i][0] = (nvar[i][0]/N_rest1[i] - N1_0[i]) * 1/(1-N1_0[i]);
       }
@@ -561,29 +461,9 @@ void FixEntangle::setup(int vflag)
     }
   }
   
+  printcounter = printcounter + 1;
 
-   printcounter = printcounter + 1;
-
-
-//   // Forward communication of nvar! //
-//   commflag = 1;
-//   comm->forward_comm(this,4);
   
-}
-
-/* ---------------------------------------------------------------------- */
-
-// !!!!!!!!!!!!!! IGNORE !!!!!!!!!!! //
-void FixEntangle::post_force_respa(int vflag, int ilevel, int /*iloop*/)
-{
-  if (ilevel == ilevel_respa) post_force(vflag);
-}
-
-/* ---------------------------------------------------------------------- */
-
-void FixEntangle::min_post_force(int vflag)
-{
-  post_force(vflag);
 }
 
 
@@ -593,7 +473,7 @@ void FixEntangle::min_post_force(int vflag)
 
 void FixEntangle::grow_arrays(int nmax)
 {
-  if (1/*peratom_flag*/) {
+  if (peratom_flag) {
     memory->grow(array_atom,nmax,size_peratom_cols,"fix_entangle:array_atom");
   }
 }
@@ -615,7 +495,7 @@ void FixEntangle::init_myarray()
 
 void FixEntangle::copy_arrays(int i, int j, int delflag)
 {
-  if (/*peratom_flag*/ 1) {
+  if (peratom_flag) {
     for (int m = 0; m < size_peratom_cols; m++)
       array_atom[j][m] = array_atom[i][m];
   }
@@ -626,7 +506,7 @@ void FixEntangle::copy_arrays(int i, int j, int delflag)
 
 void FixEntangle::set_arrays(int i)
 {
-  if (/*peratom_flag*/ 1) {
+  if (peratom_flag) {
     for (int m = 0; m < size_peratom_cols; m++)
       array_atom[i][m] = 0;
   }
@@ -671,20 +551,6 @@ int FixEntangle::pack_forward_comm(int n, int *list, double *buf,
       }
       return m;
   }
-
-  // EXAMPLE OF COMMUNICATION OF SPECIAL LIST BY DEFAULT //
-  // int **nspecial = atom->nspecial;
-  // tagint **special = atom->special;
-
-  // m = 0;
-  // for (i = 0; i < n; i++) {
-  //   j = list[i];
-  //   ns = nspecial[j][0];
-  //   buf[m++] = ubuf(ns).d;
-  //   for (k = 0; k < ns; k++)
-  //     buf[m++] = ubuf(special[j][k]).d;
-  // }
-  // return m;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -707,19 +573,6 @@ void FixEntangle::unpack_forward_comm(int n, int first, double *buf)
         }
     }
   }
-  // } else {
-    // int **nspecial = atom->nspecial;
-    // tagint **special = atom->special;
-
-    // m = 0;
-    // last = first + n;
-    // for (i = first; i < last; i++) {
-    //   ns = (int) ubuf(buf[m++]).i;
-    //   nspecial[i][0] = ns;
-    //   for (j = 0; j < ns; j++)
-    //     special[i][j] = (tagint) ubuf(buf[m++]).i;
-    // }
-  // }
 }
 
 /* ---------------------------------------------------------------------- */

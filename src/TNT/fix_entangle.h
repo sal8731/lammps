@@ -31,13 +31,8 @@ class FixEntangle : public Fix {
   int setmask();
   void post_constructor();
   void init();
-  void init_list(int, class NeighList *) override;
   void setup(int) override;
-  // void setup_pre_exchange() override;
-  // void pre_exchange() override;
   void post_force(int);
-  void post_force_respa(int, int, int);
-  void min_post_force(int);
 
   int pack_forward_comm(int, int *, double *, int, int *);
   void unpack_forward_comm(int, int, double *);
@@ -49,22 +44,15 @@ class FixEntangle : public Fix {
   void copy_arrays(int, int, int) override;
 
  protected:
-  int me, nprocs, seed;
-  int overflow;
+  int me, nprocs;
   int nmax;
   double **nu;
-  double *array1;
 
-  class RanMars *random;
-  class NeighList *list;
-
-  int prop_atom_flag, nvalues, overlay_flag;
 
   int countflag, commflag;
   int nlevels_respa;
 
   char *new_fix_id;
-  char *new_fix_id2;
   int index;
   int taggindex;
   int printcounter = 1;
