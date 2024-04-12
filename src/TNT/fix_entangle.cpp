@@ -308,6 +308,9 @@ void FixEntangle::setup(int vflag)
     //We need a loop to go over columns of bond_atom because each atom is connected to three/one particles to find the left-hand side atom and right-hand side atom to aquire their vectorial distances.
     //We have used the tagID here to find the previous and next atoms (stored in nvar[*][3] for each atom)
 
+    int prev_atom = -1;
+    int next_atom = -1;
+
     for (int jj=0; jj < num_bond[i]; jj++){
       
       int bonded_atom_tmp = atom->map(bond_atom[i][jj]);
@@ -319,16 +322,24 @@ void FixEntangle::setup(int vflag)
       int bonded_atom = domain->closest_image(i,bonded_atom_tmp);
       
       if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]-1){
-        delx1 = x[bonded_atom][0] - x[i][0];
-        dely1 = x[bonded_atom][1] - x[i][1];
-        delz1 = x[bonded_atom][2] - x[i][2];
+        prev_atom = bonded_atom;
       }
 
       if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]+1){
-        delx2 = x[bonded_atom][0] - x[i][0];
-        dely2 = x[bonded_atom][1] - x[i][1];
-        delz2 = x[bonded_atom][2] - x[i][2];
+        next_atom = bonded_atom;
       }
+    }
+
+    if (prev_atom != -1){
+      delx1 = x[prev_atom][0] - x[i][0];
+      dely1 = x[prev_atom][1] - x[i][1];
+      delz1 = x[prev_atom][2] - x[i][2];
+    }
+
+    if (next_atom != -1){
+      delx2 = x[next_atom][0] - x[i][0];
+      dely2 = x[next_atom][1] - x[i][1];
+      delz2 = x[next_atom][2] - x[i][2];
     }
 
     //calculate the periodic distance magnitude
@@ -418,6 +429,9 @@ void FixEntangle::setup(int vflag)
     nu[i][0] += nu_rate * (-1);
     nu[i][1] += nu_rate * (+1);  
 
+    int LHS_atom = -1;
+    int RHS_atom = -1;
+
     for (int jj = 0; jj < num_bond[i]; jj++){
       
       int bonded_atom_tmp = atom->map(bond_atom[i][jj]);
@@ -429,15 +443,23 @@ void FixEntangle::setup(int vflag)
       int bonded_atom = domain->closest_image(i,bonded_atom_tmp);
       
       if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]-1 && molecule[i]==molecule[bonded_atom]){     // previous atom in chain
-        nu[bonded_atom][2] += nu_rate * (-1);
+        LHS_atom = bonded_atom;
       }
 
       if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]+1 && molecule[i]==molecule[bonded_atom]){     // next atom in chain
-        nu[bonded_atom][1] += nu_rate * (+1);
+        RHS_atom = bonded_atom;
       }
 
     }
-    
+
+    if (LHS_atom != -1){
+      nu[LHS_atom][2] += nu_rate * (-1);
+    }
+
+    if (RHS_atom != -1){
+      nu[RHS_atom][1] += nu_rate * (+1);
+    }
+
     // Average sliding magnitude (sometimes printed as a measure of relaxation)
     AVGnu = AVGnu + (sqrt(nu_rate*nu_rate))/nlocal; 
   }
