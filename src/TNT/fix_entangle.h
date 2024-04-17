@@ -32,7 +32,7 @@ class FixEntangle : public Fix {
   void post_constructor();
   void init();
   void setup(int) override;
-  void post_force(int);
+  void pre_force(int);
 
   int pack_forward_comm(int, int *, double *, int, int *);
   void unpack_forward_comm(int, int, double *);
@@ -47,6 +47,8 @@ class FixEntangle : public Fix {
   int me, nprocs;
   int nmax;
   double **nu;
+  double **N_0;
+  double **N_rest;
 
 
   int countflag, commflag;
@@ -56,8 +58,6 @@ class FixEntangle : public Fix {
   int index;
   int taggindex;
   int printcounter = 1;
-  double dummy[100][5];
-  int dummy_flag = 0;
   int DIS_flag = 0;
   void init_myarray();
 private:

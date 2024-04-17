@@ -49,7 +49,7 @@ using namespace FixConst;
 /* ---------------------------------------------------------------------- */
 
 FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg), nu(nullptr)
+  Fix(lmp, narg, arg), nu(nullptr), N_rest(nullptr), N_0(nullptr)
 {
 
   // IS THE NUMBER OF ARGUMENTS CORRECT? //
@@ -73,13 +73,15 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
 
   // for having a peratom array related to this fix
   peratom_flag = 1;
-  size_peratom_cols = 4;
+  size_peratom_cols = 6;
   
   // used later to setup
   countflag = 0;
 
   // INITIALIZE ANY LOCAL ARRAYS //
   nu = nullptr;
+  N_rest = nullptr;
+  N_0 = nullptr;
 
   nmax = atom->nmax;
 
@@ -98,7 +100,8 @@ FixEntangle::~FixEntangle()
 {
   // delete locally stored arrays
   memory->destroy(nu);
-
+  memory->destroy(N_0);
+  memory->destroy(N_rest);
   // DELETE CALL TO FIX PROPERTY/ATOM //
   if (new_fix_id && modify->nfix) modify->delete_fix(new_fix_id);
   delete [] new_fix_id;
@@ -110,7 +113,7 @@ FixEntangle::~FixEntangle()
 int FixEntangle::setmask()
 {
   int mask = 0;
-  mask |= POST_FORCE;
+  mask |= PRE_FORCE;
   return mask;
 }
 
@@ -153,6 +156,8 @@ void FixEntangle::post_constructor()
   // Create memory allocations
   nmax = atom->nmax;
   memory->create(nu,nmax,2,"entangle:nu");
+  memory->create(N_rest,nlocal,2,"entangle:N_rest");
+  memory->create(N_0,nlocal,2,"entangle:N_0");
   
 }
 
@@ -168,7 +173,7 @@ void FixEntangle::init()
 void FixEntangle::setup(int vflag)
 {
   if (utils::strmatch(update->integrate_style, "^verlet")){
-    post_force(vflag);
+    pre_force(vflag);
   }
 
   // Only run this in the beginning of simulation (transferring nvar data from velocities to actual peratom array)
@@ -201,7 +206,7 @@ void FixEntangle::setup(int vflag)
 
 /* ---------------------------------------------------------------------- */
 
- void FixEntangle::post_force(int vflag)
+ void FixEntangle::pre_force(int vflag)
 {
 
   // ATOM COUNTS
@@ -224,7 +229,15 @@ void FixEntangle::setup(int vflag)
     nmax = atom->nmax;
     memory->create(nu,nmax,2,"entangle:nu");
   }
-  
+
+  // Possibly resize arrays "N_rest" & "N_0"
+  memory->destroy(N_0);
+  memory->destroy(N_rest);
+  nmax = atom->nlocal;
+  memory->create(N_0,nlocal,2,"entangle:N_0");
+  memory->create(N_rest,nlocal,2,"entangle:N_rest");
+
+
   // Initialize array "nu"
   for (int i = 0; i < nall; i++){
     for (int j = 0; j < 2; j++){
@@ -232,12 +245,12 @@ void FixEntangle::setup(int vflag)
     }
   }
 
-
-  // these are used later for visualization and ovito purposes
-  double *N_rest1 = new double[nlocal];
-  double *N_rest2 = new double[nlocal];
-  double *N1_0 = new double[nlocal];
-  double *N2_0 = new double[nlocal];
+  for (int i = 0; i < nlocal; i++){
+    for (int j = 0; j < 2; j++){
+      N_0[i][j] = 0.0;
+      N_rest[i][j] = 0.0;
+    }
+  }
 
   // Our state variable "nvar"
   double **nvar = atom->darray[index];
@@ -266,10 +279,10 @@ void FixEntangle::setup(int vflag)
   double dt = update->dt;
 
   // initialize for later use of dumping nvar in a way to visualize tension of chains
-  for (int i=1 ; i<nlocal; i++){
+  for (int i = 0; i < nlocal; i++){
     if (printcounter == 1){
-        N1_0[i] = nvar[i][0]/N_rest1[i];
-        N2_0[i] = nvar[i][1]/N_rest2[i];
+        N_0[i][0] = nvar[i][0]/N_rest[i][0];
+        N_0[i][1] = nvar[i][1]/N_rest[i][1];
     }
   }
 
@@ -329,7 +342,7 @@ void FixEntangle::setup(int vflag)
         next_atom = bonded_atom;
       }
     }
-
+    
     if (prev_atom != -1){
       delx1 = x[prev_atom][0] - x[i][0];
       dely1 = x[prev_atom][1] - x[i][1];
@@ -348,14 +361,14 @@ void FixEntangle::setup(int vflag)
     double r1=sqrt(rsq1);
 
     //calculate the number of monomers for a sub-chain of length r1 to be at equilibrium
-    N_rest1[i] = pow(r1,1.667);
+    N_rest[i][0] = pow(r1,1.667);
     
 
     domain->minimum_image(delx2, dely2, delz2);
     double rsq2 = delx2*delx2 + dely2*dely2 + delz2*delz2;
     double r2=sqrt(rsq2);
 
-    N_rest2[i] = pow(r2,1.667);
+    N_rest[i][1] = pow(r2,1.667);
 
 
     // calculate the Rzero1 and Rzero2 as equilibrium length of each sides based on their number of monomers
@@ -364,20 +377,21 @@ void FixEntangle::setup(int vflag)
     double Rzero1 = pow(Ncube1,0.2);
     double Rzero2 = pow(Ncube2,0.2);
 
+    double b = 0.05;
 
     // here we calculate the force components from the left and right hand side sub-chains 
 
     if(r1!=0){ // if length of a sub-chain is zero it means that particle is the anchorpoint of a dangling end
-        fbond1x = (3 * 1) * (delx1 / nvar[i][0]) - 3 * (nvar[i][0]*nvar[i][0])/(r1*r1*r1*r1) * delx1/r1;       //(k * T) / (b * b) = 1
-        fbond1y = (3 * 1) * (dely1 / nvar[i][0]) - 3 * (nvar[i][0]*nvar[i][0])/(r1*r1*r1*r1) * dely1/r1;       //(k * T) / (b * b) = 1
-        fbond1z = (3 * 1) * (delz1 / nvar[i][0]) - 3 * (nvar[i][0]*nvar[i][0])/(r1*r1*r1*r1) * delz1/r1;  
+        fbond1x = (delx1 / (nvar[i][0] * b * b)) * (r1*r1 - 3 * nvar[i][0] * nvar[i][0] * b * b)/(r1*r1 - nvar[i][0] * nvar[i][0] * b * b) - 3 * b * b * b * (nvar[i][0]*nvar[i][0])/(2*r1*r1*r1*r1) * delx1/r1;       //(k * T) / (b * b) = 1
+        fbond1y = (dely1 / (nvar[i][0] * b * b)) * (r1*r1 - 3 * nvar[i][0] * nvar[i][0] * b * b)/(r1*r1 - nvar[i][0] * nvar[i][0] * b * b) - 3 * b * b * b * (nvar[i][0]*nvar[i][0])/(2*r1*r1*r1*r1) * dely1/r1;       //(k * T) / (b * b) = 1
+        fbond1z = (delz1 / (nvar[i][0] * b * b)) * (r1*r1 - 3 * nvar[i][0] * nvar[i][0] * b * b)/(r1*r1 - nvar[i][0] * nvar[i][0] * b * b) - 3 * b * b * b * (nvar[i][0]*nvar[i][0])/(2*r1*r1*r1*r1) * delz1/r1;  
     }
 
 
     if(r2!=0){ // if length of a sub-chain is zero it means that particle is the anchorpoint of a dangling end
-        fbond2x = (3 * 1) * (delx2 / nvar[i][1]) - 3 * (nvar[i][1]*nvar[i][1])/(r2*r2*r2*r2) * delx2/r2;       //(k * T) / (b * b) = 1
-        fbond2y = (3 * 1) * (dely2 / nvar[i][1]) - 3 * (nvar[i][1]*nvar[i][1])/(r2*r2*r2*r2) * dely2/r2;       //(k * T) / (b * b) = 1
-        fbond2z = (3 * 1) * (delz2 / nvar[i][1]) - 3 * (nvar[i][1]*nvar[i][1])/(r2*r2*r2*r2) * delz2/r2;
+        fbond2x = (delx2 / (nvar[i][1] * b * b)) * (r2*r2 - 3 * nvar[i][1] * nvar[i][1] * b * b)/(r2*r2 - nvar[i][1] * nvar[i][1] * b * b) - 3 * b * b * b * (nvar[i][1]*nvar[i][1])/(2*r2*r2*r2*r2) * delx2/r2;       //(k * T) / (b * b) = 1
+        fbond2y = (dely2 / (nvar[i][1] * b * b)) * (r2*r2 - 3 * nvar[i][1] * nvar[i][1] * b * b)/(r2*r2 - nvar[i][1] * nvar[i][1] * b * b) - 3 * b * b * b * (nvar[i][1]*nvar[i][1])/(2*r2*r2*r2*r2) * dely2/r2;       //(k * T) / (b * b) = 1
+        fbond2z = (delz2 / (nvar[i][1] * b * b)) * (r2*r2 - 3 * nvar[i][1] * nvar[i][1] * b * b)/(r2*r2 - nvar[i][1] * nvar[i][1] * b * b) - 3 * b * b * b * (nvar[i][1]*nvar[i][1])/(2*r2*r2*r2*r2) * delz2/r2;
     }
 
     //Used to print custom stuff
@@ -396,12 +410,12 @@ void FixEntangle::setup(int vflag)
 
 
     if (evflag) {
-      P[0] += (abs(delx1*fbond1x) + abs(delx2*fbond2x));
-      P[1] += (abs(dely1*fbond1y) + abs(dely2*fbond2y));
-      P[2] += (abs(delz1*fbond1z) + abs(delz2*fbond2z));
-      P[3] += (abs(delx1*fbond1y) + abs(delx2*fbond2y));
-      P[4] += (abs(delx1*fbond1z) + abs(delx2*fbond2z));
-      P[5] += (abs(dely1*fbond1z) + abs(dely2*fbond2z));
+      P[0] += ((delx1*fbond1x) + (delx2*fbond2x));
+      P[1] += ((dely1*fbond1y) + (dely2*fbond2y));
+      P[2] += ((delz1*fbond1z) + (delz2*fbond2z));
+      P[3] += ((delx1*fbond1y) + (delx2*fbond2y));
+      P[4] += ((delx1*fbond1z) + (delx2*fbond2z));
+      P[5] += ((dely1*fbond1z) + (dely2*fbond2z));
 
       v_tally(i, P);
     }
@@ -421,13 +435,30 @@ void FixEntangle::setup(int vflag)
       fbond2 = -fbond2;
     }
 
-    double Fm = fbond2-fbond1;
+    double Pi_1, Pi_2;
+
+    if (r1 != 0){
+      //Pi_1 = (-0.5 * (r1 / (nvar[i][0]*b)) * (r1 / (nvar[i][0]*b)) - log(1 - (r1 / (nvar[i][0]*b)) * (r1 / (nvar[i][0]*b))) + 2 * r1 * r1 / (r1 * r1 - nvar[i][0] * nvar[i][0] * b * b) + nvar[i][0] * b * b * b / (r1 * r1 * r1));
+      Pi_1 = -3 * r1 * r1 / (2 * b * b) * 1 / (nvar[i][0] * nvar[i][0]) + 2 * b * b * b * nvar[i][0] / (r1 * r1 * r1);
+    } else {
+      Pi_1 = -0.5 * pow(nvar[i][0],-0.8);
+      //Pi_1 = (-0.5 * pow(nvar[i][0],-0.8)) - log(1 - pow(nvar[i][0],-0.8)) + 2 / (1 - pow(nvar[i][0],0.8)) + pow(nvar[i][0],-0.8);
+    }
+
+    if (r2 != 0){    
+      //Pi_2 = (-0.5 * (r2 / (nvar[i][1]*b)) * (r2 / (nvar[i][1]*b)) - log(1 - (r2 / (nvar[i][1]*b)) * (r2 / (nvar[i][1]*b))) + 2 * r2 * r2 / (r2 * r2 - nvar[i][1] * nvar[i][1] * b * b) + nvar[i][1] * b * b * b / (r2 * r2 * r2));
+      Pi_2 = -3 * r2 * r2 / (2 * b * b) * 1 / (nvar[i][1] * nvar[i][1]) + 2 * b * b * b * nvar[i][1] / (r2 * r2 * r2) ;
+    } else {
+      Pi_2 = -0.5 * pow(nvar[i][1],-0.8);
+      //Pi_2 = (-0.5 * pow(nvar[i][1],-0.8)) - log(1 - pow(nvar[i][1],-0.8)) + 2 / (1 - pow(nvar[i][1],0.8)) + pow(nvar[i][1],-0.8);
+    }
+    double Pi_m = Pi_2 - Pi_1;
 
     // difference of tension from two sides is used to calculate monomer sliding rate at that entanglement
-    double nu_rate = Fm / zeta; 
+    double nu_rate = Pi_m / zeta; 
     
-    nu[i][0] += nu_rate * (-1);
-    nu[i][1] += nu_rate * (+1);  
+    nu[i][0] += (nu_rate * (-1));
+    nu[i][1] += (nu_rate * (+1));  
 
     int LHS_atom = -1;
     int RHS_atom = -1;
@@ -437,7 +468,7 @@ void FixEntangle::setup(int vflag)
       int bonded_atom_tmp = atom->map(bond_atom[i][jj]);
 
       if (bonded_atom_tmp < 0) {
-        error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
+        error->one(FLERR,"Fix entangle needs ghost atoms from further away");
       }
 
       int bonded_atom = domain->closest_image(i,bonded_atom_tmp);
@@ -453,33 +484,48 @@ void FixEntangle::setup(int vflag)
     }
 
     if (LHS_atom != -1){
-      nu[LHS_atom][2] += nu_rate * (-1);
+      nu[LHS_atom][2] += (nu_rate * (-1));
     }
 
     if (RHS_atom != -1){
-      nu[RHS_atom][1] += nu_rate * (+1);
+      nu[RHS_atom][1] += (nu_rate * (+1));
     }
 
     // Average sliding magnitude (sometimes printed as a measure of relaxation)
     AVGnu = AVGnu + (sqrt(nu_rate*nu_rate))/nlocal; 
   }
+  
 
   // reverse communication of nu so ghost atoms aquire their sliding rates
-  comm->reverse_comm(this,2);
+  //comm->reverse_comm(this,2);
+
+  // for (int j = 0; j < nlocal; j++) {
+  //   nvar[j][0] = nvar[j][0] + nu[j][0] * update->dt;
+  //   nvar[j][1] = nvar[j][1] + nu[j][1] * update->dt;
+  // }
+
+
+  //printf("\n\nAVERAGE SLIDING RATE  : %f \n\n",AVGnu);
+  commflag = 1;
+  comm->forward_comm(this,4);
 
   // array_atom is a per-atom array which can be dumped for visualization purposes in ovito
   for (int i = 0; i < nlocal; i++) {
     if(peratom_flag){
-      if(N_rest1[i]!=0){  
-      array_atom[i][0] = (nvar[i][0]/N_rest1[i] - N1_0[i]) * 1/(1-N1_0[i]);
+      if(N_rest[i][0] != 0){  
+      // array_atom[i][0] = (nvar[i][0]/N_rest[i][0] - N_0[i][0]) * 1/(1-N_0[i][0]);
+      // array_atom[i][0] = (nvar[i][0]/N_rest[i][0]);
       }
-      if(N_rest2[i]!=0){
-      array_atom[i][1] = (nvar[i][1]/N_rest2[i] - N2_0[i]) * 1/(1-N2_0[i]);
+      if(N_rest[i][1] != 0){
+      // array_atom[i][1] = (nvar[i][1]/N_rest[i][1] - N_0[i][1]) * 1/(1-N_0[i][1]);
+      // array_atom[i][1] = (nvar[i][1]/N_rest[i][1]);
       }  
-      // array_atom[i][0] = nvar[i][0];
-      // array_atom[i][1] = nvar[i][1];
+      array_atom[i][0] = nvar[i][0];
+      array_atom[i][1] = nvar[i][1];
       array_atom[i][2] = nvar[i][2];
       array_atom[i][3] = nvar[i][3];
+      array_atom[i][4] = (nu[i][0]);
+      array_atom[i][5] = (nu[i][1]);
     }
   }
   
