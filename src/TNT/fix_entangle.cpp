@@ -142,6 +142,10 @@ void FixEntangle::post_constructor()
   
   int *mask = atom->mask;
 
+  // accessing per-atom velocities and radius because the contain nvar (from data file)
+  double **v = atom->v;
+  double *radius = atom->radius;
+
 
   // ! INITIALIZE OUR NEW STATE VARIABLE ! //
   //   !! EACH ATOM WILL STORE EXACTLY 4 VALUES !!   //
@@ -152,6 +156,17 @@ void FixEntangle::post_constructor()
       }
     }
   }
+
+  for (int i = 0; i < nlocal; i++) {
+    nvar[i][0] = v[i][0];
+    nvar[i][1] = v[i][1];
+    nvar[i][2] = v[i][2];
+    nvar[i][3] = radius[i]*2;
+  }
+
+  commflag = 1;
+  comm->forward_comm(this,4);
+
 
   // Create memory allocations
   nmax = atom->nmax;
@@ -184,23 +199,19 @@ void FixEntangle::setup(int vflag)
   int tmp1, tmp2;
   double **nvar = atom->darray[index];
 
-  // accessing per-atom velocities and radius because the contain nvar (from data file)
-  double **v = atom->v;
-  double *radius = atom->radius;
-
   // local atom count
   int nlocal = atom->nlocal;
   
   // [nvar] = [Leftside monomer count | Rightside monomer count | dangling end flag or Anchor point timer | chain tagID]
-  for (int i = 0; i < nlocal; i++) {
-    nvar[i][0] = v[i][0];
-    nvar[i][1] = v[i][1];
-    nvar[i][2] = v[i][2];
-    nvar[i][3] = radius[i]*2;
-  }
+  // for (int i = 0; i < nlocal; i++) {
+  //   nvar[i][0] = v[i][0];
+  //   nvar[i][1] = v[i][1];
+  //   nvar[i][2] = v[i][2];
+  //   nvar[i][3] = radius[i]*2;
+  // }
 
-  commflag = 1;
-  comm->forward_comm(this,4);
+  // commflag = 1;
+  // comm->forward_comm(this,4);
 
 }
 
@@ -233,7 +244,6 @@ void FixEntangle::setup(int vflag)
   // Possibly resize arrays "N_rest" & "N_0"
   memory->destroy(N_0);
   memory->destroy(N_rest);
-  nmax = atom->nlocal;
   memory->create(N_0,nlocal,2,"entangle:N_0");
   memory->create(N_rest,nlocal,2,"entangle:N_rest");
 
@@ -291,38 +301,16 @@ void FixEntangle::setup(int vflag)
   //loop over all entanglement points to calculate forces and then the monomer sliding rates
   for (int i = 0; i < nlocal; i++) { 
 
+    //identifying if it is a dangling end 
+
     // Check if the atom is in the correct group... keep for generality
     if (!(mask[i] & groupbit)) continue;
-    
-    // components of left-hand side chain vector
-    double delx1 = 0;
-    double dely1 = 0;
-    double delz1 = 0;
-
-    // components of right-hand side chain vector
-    double delx2 = 0;
-    double dely2 = 0;
-    double delz2 = 0;
-
-    // components of left-hand side force
-    double fbond1x = 0;
-    double fbond1y = 0;
-    double fbond1z = 0;
-
-    // components of right-hand side force
-    double fbond2x = 0;
-    double fbond2y = 0;
-    double fbond2z = 0;
-
-    // force magnitudes
-    double fbond1 = 0;
-    double fbond2 = 0;
 
     //We need a loop to go over columns of bond_atom because each atom is connected to three/one particles to find the left-hand side atom and right-hand side atom to aquire their vectorial distances.
     //We have used the tagID here to find the previous and next atoms (stored in nvar[*][3] for each atom)
 
-    int prev_atom = -1;
-    int next_atom = -1;
+    int LHS_atom = -1;
+    int RHS_atom = -1;
 
     for (int jj=0; jj < num_bond[i]; jj++){
       
@@ -335,65 +323,96 @@ void FixEntangle::setup(int vflag)
       int bonded_atom = domain->closest_image(i,bonded_atom_tmp);
       
       if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]-1){
-        prev_atom = bonded_atom;
+        LHS_atom = bonded_atom;
       }
 
       if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]+1){
-        next_atom = bonded_atom;
+        RHS_atom = bonded_atom;
+      }
+    }
+
+    // checking if prev and next atoms are right
+
+    if (nvar[i][2] != -1){
+      if (LHS_atom == -1){
+        error->one(FLERR,"Inconsistent finding of previous atom");
+      }
+    }
+
+    if (nvar[i][2] != 1){
+      if (RHS_atom == -1){
+        error->one(FLERR,"Inconsistent finding of next atom");
       }
     }
     
-    if (prev_atom != -1){
-      delx1 = x[prev_atom][0] - x[i][0];
-      dely1 = x[prev_atom][1] - x[i][1];
-      delz1 = x[prev_atom][2] - x[i][2];
+    // components of left-hand side chain vector
+    double delx1 = 0;
+    double dely1 = 0;
+    double delz1 = 0;
+
+    // components of right-hand side chain vector
+    double delx2 = 0;
+    double dely2 = 0;
+    double delz2 = 0;
+
+    double r1 = 0;
+    double r2 = 0;
+
+    // defining kuhn length
+    double b = 0.05;
+
+    if (nvar[i][2] != -1){
+      delx1 = x[LHS_atom][0] - x[i][0];
+      dely1 = x[LHS_atom][1] - x[i][1];
+      delz1 = x[LHS_atom][2] - x[i][2];
+      domain->minimum_image(delx1, dely1, delz1);
+      double rsq1 = delx1*delx1 + dely1*dely1 + delz1*delz1;
+      r1=sqrt(rsq1);
+    } else {    // if a particle has dangling end on it's left
+      r1 = b * pow(nvar[i][0],0.6);
+      delx1 = sqrt(2)/2 * r1;
+      dely1 = sqrt(2)/2 * r1;
+      delz1 = 0;
     }
 
-    if (next_atom != -1){
-      delx2 = x[next_atom][0] - x[i][0];
-      dely2 = x[next_atom][1] - x[i][1];
-      delz2 = x[next_atom][2] - x[i][2];
+    if (nvar[i][2] != 1){   
+      delx2 = x[RHS_atom][0] - x[i][0];
+      dely2 = x[RHS_atom][1] - x[i][1];
+      delz2 = x[RHS_atom][2] - x[i][2];
+      domain->minimum_image(delx2, dely2, delz2);
+      double rsq2 = delx2*delx2 + dely2*dely2 + delz2*delz2;
+      r2=sqrt(rsq2);
+    } else {     // if a particle has dangling end on it's right
+      r2 = b * pow(nvar[i][1],0.6);
+      delx2 = sqrt(2)/2 * r2;
+      dely2 = sqrt(2)/2 * r2;
+      delz2 = 0;
     }
-
-    //calculate the periodic distance magnitude
-    domain->minimum_image(delx1, dely1, delz1);
-    double rsq1 = delx1*delx1 + dely1*dely1 + delz1*delz1;
-    double r1=sqrt(rsq1);
 
     //calculate the number of monomers for a sub-chain of length r1 to be at equilibrium
-    N_rest[i][0] = pow(r1,1.667);
-    
-
-    domain->minimum_image(delx2, dely2, delz2);
-    double rsq2 = delx2*delx2 + dely2*dely2 + delz2*delz2;
-    double r2=sqrt(rsq2);
-
-    N_rest[i][1] = pow(r2,1.667);
+    N_rest[i][0] = pow(r1/b,1.667);
+    N_rest[i][1] = pow(r2/b,1.667);
 
 
-    // calculate the Rzero1 and Rzero2 as equilibrium length of each sides based on their number of monomers
-    double Ncube1 = nvar[i][0]*nvar[i][0]*nvar[i][0];
-    double Ncube2 = nvar[i][1]*nvar[i][1]*nvar[i][1];
-    double Rzero1 = pow(Ncube1,0.2);
-    double Rzero2 = pow(Ncube2,0.2);
+    // components of left-hand side force
+    double fbond1x = 0;
+    double fbond1y = 0;
+    double fbond1z = 0;
 
-    double b = 0.05;
+    // components of right-hand side force
+    double fbond2x = 0;
+    double fbond2y = 0;
+    double fbond2z = 0;
 
     // here we calculate the force components from the left and right hand side sub-chains 
 
-    if(r1!=0){ // if length of a sub-chain is zero it means that particle is the anchorpoint of a dangling end
-        fbond1x = 3 * delx1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delx1/r1;
-        fbond1y = 3 * dely1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * dely1/r1;
-        fbond1z = 3 * delz1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delz1/r1;
-    
-    }
+    fbond1x = 3 * delx1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delx1/r1;
+    fbond1y = 3 * dely1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * dely1/r1;
+    fbond1z = 3 * delz1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delz1/r1;
 
-
-    if(r2!=0){ // if length of a sub-chain is zero it means that particle is the anchorpoint of a dangling end
-        fbond2x = 3 * delx2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delx2/r2;
-        fbond2y = 3 * dely2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * dely2/r2;
-        fbond2z = 3 * delz2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delz2/r2;
-    }
+    fbond2x = 3 * delx2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delx2/r2;
+    fbond2y = 3 * dely2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * dely2/r2;
+    fbond2z = 3 * delz2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delz2/r2;
 
     //Used to print custom stuff
     if ((printcounter % 10000)==0){
@@ -421,6 +440,10 @@ void FixEntangle::setup(int vflag)
       v_tally(i, P);
     }
 
+    // force magnitudes
+    double fbond1 = 0;
+    double fbond2 = 0;
+
     // calculate the force magnitude from each side of the entanglement for calculation of sliding rate
     double fbond1_squared = (fbond1x * fbond1x) + (fbond1y * fbond1y) + (fbond1z * fbond1z);
     fbond1 = sqrt(fbond1_squared);
@@ -436,23 +459,16 @@ void FixEntangle::setup(int vflag)
       fbond2 = -fbond2;
     }
 
+    // calculation of osmossic pressure
     double Pi_1, Pi_2;
 
-    if (r1 != 0){
-      //Pi_1 = (-0.5 * (r1 / (nvar[i][0]*b)) * (r1 / (nvar[i][0]*b)) - log(1 - (r1 / (nvar[i][0]*b)) * (r1 / (nvar[i][0]*b))) + 2 * r1 * r1 / (r1 * r1 - nvar[i][0] * nvar[i][0] * b * b) + nvar[i][0] * b * b * b / (r1 * r1 * r1));
-      Pi_1 = -3 * r1 * r1 / (2 * b * b) * 1 / (nvar[i][0] * nvar[i][0]) + 2 * b * b * b * nvar[i][0] / (r1 * r1 * r1);
-    } else {
-      Pi_1 = -0.5 * pow(nvar[i][0],-0.8);
-      //Pi_1 = (-0.5 * pow(nvar[i][0],-0.8)) - log(1 - pow(nvar[i][0],-0.8)) + 2 / (1 - pow(nvar[i][0],0.8)) + pow(nvar[i][0],-0.8);
-    }
+    //Pi_1 = (-0.5 * (r1 / (nvar[i][0]*b)) * (r1 / (nvar[i][0]*b)) - log(1 - (r1 / (nvar[i][0]*b)) * (r1 / (nvar[i][0]*b))) + 2 * r1 * r1 / (r1 * r1 - nvar[i][0] * nvar[i][0] * b * b) + nvar[i][0] * b * b * b / (r1 * r1 * r1));
+    Pi_1 = -3 * r1 * r1 / (2 * b * b) * 1 / (nvar[i][0] * nvar[i][0]) + 2 * b * b * b * nvar[i][0] / (r1 * r1 * r1);
 
-    if (r2 != 0){    
-      //Pi_2 = (-0.5 * (r2 / (nvar[i][1]*b)) * (r2 / (nvar[i][1]*b)) - log(1 - (r2 / (nvar[i][1]*b)) * (r2 / (nvar[i][1]*b))) + 2 * r2 * r2 / (r2 * r2 - nvar[i][1] * nvar[i][1] * b * b) + nvar[i][1] * b * b * b / (r2 * r2 * r2));
-      Pi_2 = -3 * r2 * r2 / (2 * b * b) * 1 / (nvar[i][1] * nvar[i][1]) + 2 * b * b * b * nvar[i][1] / (r2 * r2 * r2) ;
-    } else {
-      Pi_2 = -0.5 * pow(nvar[i][1],-0.8);
-      //Pi_2 = (-0.5 * pow(nvar[i][1],-0.8)) - log(1 - pow(nvar[i][1],-0.8)) + 2 / (1 - pow(nvar[i][1],0.8)) + pow(nvar[i][1],-0.8);
-    }
+    //Pi_2 = (-0.5 * (r2 / (nvar[i][1]*b)) * (r2 / (nvar[i][1]*b)) - log(1 - (r2 / (nvar[i][1]*b)) * (r2 / (nvar[i][1]*b))) + 2 * r2 * r2 / (r2 * r2 - nvar[i][1] * nvar[i][1] * b * b) + nvar[i][1] * b * b * b / (r2 * r2 * r2));
+    Pi_2 = -3 * r2 * r2 / (2 * b * b) * 1 / (nvar[i][1] * nvar[i][1]) + 2 * b * b * b * nvar[i][1] / (r2 * r2 * r2) ;
+    
+    
     double Pi_m = Pi_2 - Pi_1;
 
     // difference of tension from two sides is used to calculate monomer sliding rate at that entanglement
@@ -460,37 +476,13 @@ void FixEntangle::setup(int vflag)
     
     nu[i][0] += (nu_rate * (-1));
     nu[i][1] += (nu_rate * (+1));  
-
-    int LHS_atom = -1;
-    int RHS_atom = -1;
-
-    for (int jj = 0; jj < num_bond[i]; jj++){
-      
-      int bonded_atom_tmp = atom->map(bond_atom[i][jj]);
-
-      if (bonded_atom_tmp < 0) {
-        error->one(FLERR,"Fix entangle needs ghost atoms from further away");
-      }
-
-      int bonded_atom = domain->closest_image(i,bonded_atom_tmp);
-      
-      if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]-1 && molecule[i]==molecule[bonded_atom]){     // previous atom in chain
-        LHS_atom = bonded_atom;
-      }
-
-      if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]+1 && molecule[i]==molecule[bonded_atom]){     // next atom in chain
-        RHS_atom = bonded_atom;
-      }
-
-    }
-
     
-
-    if (LHS_atom != -1){
+    
+    if (nvar[i][2] != -1){
       nu[LHS_atom][1] += (nu_rate * (-1));
     }
 
-    if (RHS_atom != -1){
+    if (nvar[i][2] != 1){
       nu[RHS_atom][0] += (nu_rate * (+1));
     }
     
