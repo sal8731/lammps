@@ -382,16 +382,17 @@ void FixEntangle::setup(int vflag)
     // here we calculate the force components from the left and right hand side sub-chains 
 
     if(r1!=0){ // if length of a sub-chain is zero it means that particle is the anchorpoint of a dangling end
-        fbond1x = (delx1 / (nvar[i][0] * b * b)) * (r1*r1 - 3 * nvar[i][0] * nvar[i][0] * b * b)/(r1*r1 - nvar[i][0] * nvar[i][0] * b * b) - 3 * b * b * b * (nvar[i][0]*nvar[i][0])/(2*r1*r1*r1*r1) * delx1/r1;       //(k * T) / (b * b) = 1
-        fbond1y = (dely1 / (nvar[i][0] * b * b)) * (r1*r1 - 3 * nvar[i][0] * nvar[i][0] * b * b)/(r1*r1 - nvar[i][0] * nvar[i][0] * b * b) - 3 * b * b * b * (nvar[i][0]*nvar[i][0])/(2*r1*r1*r1*r1) * dely1/r1;       //(k * T) / (b * b) = 1
-        fbond1z = (delz1 / (nvar[i][0] * b * b)) * (r1*r1 - 3 * nvar[i][0] * nvar[i][0] * b * b)/(r1*r1 - nvar[i][0] * nvar[i][0] * b * b) - 3 * b * b * b * (nvar[i][0]*nvar[i][0])/(2*r1*r1*r1*r1) * delz1/r1;  
+        fbond1x = 3 * delx1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delx1/r1;
+        fbond1y = 3 * dely1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * dely1/r1;
+        fbond1z = 3 * delz1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delz1/r1;
+    
     }
 
 
     if(r2!=0){ // if length of a sub-chain is zero it means that particle is the anchorpoint of a dangling end
-        fbond2x = (delx2 / (nvar[i][1] * b * b)) * (r2*r2 - 3 * nvar[i][1] * nvar[i][1] * b * b)/(r2*r2 - nvar[i][1] * nvar[i][1] * b * b) - 3 * b * b * b * (nvar[i][1]*nvar[i][1])/(2*r2*r2*r2*r2) * delx2/r2;       //(k * T) / (b * b) = 1
-        fbond2y = (dely2 / (nvar[i][1] * b * b)) * (r2*r2 - 3 * nvar[i][1] * nvar[i][1] * b * b)/(r2*r2 - nvar[i][1] * nvar[i][1] * b * b) - 3 * b * b * b * (nvar[i][1]*nvar[i][1])/(2*r2*r2*r2*r2) * dely2/r2;       //(k * T) / (b * b) = 1
-        fbond2z = (delz2 / (nvar[i][1] * b * b)) * (r2*r2 - 3 * nvar[i][1] * nvar[i][1] * b * b)/(r2*r2 - nvar[i][1] * nvar[i][1] * b * b) - 3 * b * b * b * (nvar[i][1]*nvar[i][1])/(2*r2*r2*r2*r2) * delz2/r2;
+        fbond2x = 3 * delx2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delx2/r2;
+        fbond2y = 3 * dely2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * dely2/r2;
+        fbond2z = 3 * delz2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delz2/r2;
     }
 
     //Used to print custom stuff
@@ -483,26 +484,30 @@ void FixEntangle::setup(int vflag)
 
     }
 
+    
+
     if (LHS_atom != -1){
-      nu[LHS_atom][2] += (nu_rate * (-1));
+      nu[LHS_atom][1] += (nu_rate * (-1));
     }
 
     if (RHS_atom != -1){
-      nu[RHS_atom][1] += (nu_rate * (+1));
+      nu[RHS_atom][0] += (nu_rate * (+1));
     }
-
+    
     // Average sliding magnitude (sometimes printed as a measure of relaxation)
     AVGnu = AVGnu + (sqrt(nu_rate*nu_rate))/nlocal; 
   }
   
-
+  if (printcounter % 10000 == 0  || printcounter == 2){
+  printf("average sliding rate : %f\n\n",AVGnu);
+  }
   // reverse communication of nu so ghost atoms aquire their sliding rates
-  //comm->reverse_comm(this,2);
+  comm->reverse_comm(this,2);
 
-  // for (int j = 0; j < nlocal; j++) {
-  //   nvar[j][0] = nvar[j][0] + nu[j][0] * update->dt;
-  //   nvar[j][1] = nvar[j][1] + nu[j][1] * update->dt;
-  // }
+  for (int j = 0; j < nlocal; j++) {
+    nvar[j][0] = nvar[j][0] + nu[j][0] * update->dt;
+    nvar[j][1] = nvar[j][1] + nu[j][1] * update->dt;
+  }
 
 
   //printf("\n\nAVERAGE SLIDING RATE  : %f \n\n",AVGnu);
