@@ -162,6 +162,10 @@ void FixEntangle::post_constructor()
     nvar[i][1] = v[i][1];
     nvar[i][2] = v[i][2];
     nvar[i][3] = radius[i]*2;
+
+    v[i][0] = 0;
+    v[i][1] = 0;
+    v[i][2] = 0;
   }
 
   commflag = 1;
@@ -477,7 +481,7 @@ void FixEntangle::setup(int vflag)
     nu[i][0] += (nu_rate * (-1));
     nu[i][1] += (nu_rate * (+1));  
     
-    
+
     if (nvar[i][2] != -1){
       nu[LHS_atom][1] += (nu_rate * (-1));
     }
