@@ -208,7 +208,7 @@ void FixEntangle::setup(int vflag)
 
  void FixEntangle::pre_force(int vflag)
 {
-
+  // Main part of code
   // ATOM COUNTS
   int nlocal = atom->nlocal;
   int nghost = atom->nghost;
