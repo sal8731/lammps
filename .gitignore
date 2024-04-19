@@ -41,6 +41,8 @@ Thumbs.db
 .lammps_history
 .vs
 
+/EX_*/
+
 #cmake
 /build*
 /CMakeCache.txt
