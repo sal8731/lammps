@@ -49,7 +49,7 @@ using namespace FixConst;
 /* ---------------------------------------------------------------------- */
 
 FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg), nu(nullptr), N_rest(nullptr), N_0(nullptr)
+  Fix(lmp, narg, arg), nu(nullptr), N_rest(nullptr), N_0(nullptr), random(nullptr)
 {
 
   // IS THE NUMBER OF ARGUMENTS CORRECT? //
@@ -78,12 +78,24 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
   // used later to setup
   countflag = 0;
 
+  // setting a seed for random number generation
+  seed = 12345;
+
+  // initialize Marsaglia RNG with processor-unique seed
+  random = new RanMars(lmp,seed + me);
+
   // INITIALIZE ANY LOCAL ARRAYS //
   nu = nullptr;
   N_rest = nullptr;
   N_0 = nullptr;
 
   nmax = atom->nmax;
+
+  n_critical = 5;
+
+  // set up reneighboring
+  force_reneighbor = 1;
+  next_reneighbor = update->ntimestep + 1;
 
   // for allocating space to array_atom
   FixEntangle::grow_arrays(atom->nmax);
@@ -98,6 +110,9 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
 
 FixEntangle::~FixEntangle()
 {
+  // delete random number
+  delete random;
+
   // delete locally stored arrays
   memory->destroy(nu);
   memory->destroy(N_0);
@@ -114,6 +129,7 @@ int FixEntangle::setmask()
 {
   int mask = 0;
   mask |= PRE_FORCE;
+  mask |= PRE_EXCHANGE;
   return mask;
 }
 
@@ -158,7 +174,7 @@ void FixEntangle::post_constructor()
   }
 
   for (int i = 0; i < nlocal; i++) {
-    nvar[i][0] = v[i][0];
+    nvar[i][0] = v[i][0]; 
     nvar[i][1] = v[i][1];
     nvar[i][2] = v[i][2];
     nvar[i][3] = radius[i]*2;
@@ -219,6 +235,94 @@ void FixEntangle::setup(int vflag)
 
 }
 
+/* ----------------------------------------------------------------------
+  perform disentanglement
+  done before exchange, borders, reneighbor
+  so that ghost atoms and neighbor lists will be correct
+------------------------------------------------------------------------- */
+
+void FixEvaporate::pre_exchange(){
+
+
+  if (dis_flag == 0) return;
+
+  // local atom count
+  int nlocal = atom->nlocal;
+
+  // per-atom state variable
+  double **nvar = atom->darray[index];
+
+  // pair to be deleted
+  tagint delete_ids[2] = {0 , 0};
+
+  // BOND INFORMATION
+  int *num_bond = atom->num_bond;
+  int **bond_type = atom->bond_type;
+  tagint **bond_atom = atom->bond_atom;
+
+  int RHS_atom;
+  int LHS_atom;
+  int ENT_pair;
+
+
+  for (int i = 0; i < nlocal; i++){
+    if ((nvar[i][2] == -1 && nvar[i][0] < n_critical) || (nvar[i][2] == 1 && nvar[i][1] < n_critical)){
+      //here a dangling end which is going to disentangle is identified "i"
+
+      for (int j = 0; j < num_bond[i]; j++){
+        if (bond_type[i][j]==2){
+          int ENT_pair_tmp = atom->map(bond_atom[i][j]);
+
+          if (ENT_pair_tmp < 0) {
+            error->one(FLERR,"Fix entangle needs ghost atoms from further away");
+          }
+        }
+        ENT_pair = domain->closest_image(i,ENT_pair_tmp);
+      }
+
+      if (nvar[ENT_pair][2] == 1 || nvar[ENT_pair][2] == -1){
+        // Case "A" disentanglement is identified (two dangling ends entangled)
+        delete_ids[0] = tag[i];
+        delete_ids[1] = tag[ENT_pair];
+        break;
+      }
+    }
+  }
+
+  double rand_number = 0;
+
+  if (delete_ids[0] != 0){
+    rand_number = random->uniform();
+  }
+
+  double pair_array[2] = {rand_number, me};
+  double global_pair[2] = {0 , 0};
+
+  MPI_Reduce(&pair_array, &global_pair, 1, MPI_DOUBLE_INT, MPI_MAXLOC, world);
+
+  if (global_pair[0] == 0){
+    error->one(FLERR,"Fuck");
+  } 
+
+  int chosen_rank = global_pair[1];
+
+  MPI_Bcast(&delete_ids,2,MPI_INT,chosen_rank,world);
+
+  // we need to 
+
+  if (atom->map(delete_ids[0]) != -1){
+    // run delete atom method with input atom id
+  }
+
+  if (atom->map(delete_ids[1]) != -1){
+    // run delete atom method with input atom id
+  }
+
+
+
+
+}
+
 /* ---------------------------------------------------------------------- */
 
  void FixEntangle::pre_force(int vflag)
@@ -237,6 +341,7 @@ void FixEntangle::setup(int vflag)
   int *type = atom->type;
   double **f = atom->f;
   tagint *molecule = atom->molecule;
+
 
   // Possibly resize array "nu"
   if (atom->nmax > nmax) {
@@ -321,7 +426,7 @@ void FixEntangle::setup(int vflag)
       int bonded_atom_tmp = atom->map(bond_atom[i][jj]);
 
       if (bonded_atom_tmp < 0) {
-        error->one(FLERR,"Fix volvoro needs ghost atoms from further away");
+        error->one(FLERR,"Fix entangle needs ghost atoms from further away");
       }
 
       int bonded_atom = domain->closest_image(i,bonded_atom_tmp);
@@ -477,7 +582,28 @@ void FixEntangle::setup(int vflag)
 
     // difference of tension from two sides is used to calculate monomer sliding rate at that entanglement
     double nu_rate = Pi_m / zeta; 
-    
+
+    // dis_flag is used to see if pre_exchange should be called at next timestep
+    dis_flag = 0;
+    int dis_flag_local = 0;
+
+    // do not allow sliding at dangling ends if the number of monomers in reserve is less than a threshold "n_critical" (that entanglement will be disentangled at some point eventually)
+    // this also turns on the dis_flag which allows disentanglement loop to be ran
+
+    if (nvar[i][2] == -1){
+      if (nvar[i][0] < n_critical){
+        nu_rate = 0;
+        dis_flag_local = 1;
+      }
+    }
+
+    if (nvar[i][2] == 1){
+      if (nvar[i][1] < n_critical){
+        nu_rate = 0;
+        dis_flag_local = 1;
+      }
+    }
+
     nu[i][0] += (nu_rate * (-1));
     nu[i][1] += (nu_rate * (+1));  
     
@@ -500,15 +626,25 @@ void FixEntangle::setup(int vflag)
   // reverse communication of nu so ghost atoms aquire their sliding rates
   comm->reverse_comm(this,2);
 
+  // actual sliding part
   for (int j = 0; j < nlocal; j++) {
     nvar[j][0] = nvar[j][0] + nu[j][0] * update->dt;
     nvar[j][1] = nvar[j][1] + nu[j][1] * update->dt;
   }
 
-
-  //printf("\n\nAVERAGE SLIDING RATE  : %f \n\n",AVGnu);
+  // forward communication of nvar so other processors update their ghosts
   commflag = 1;
   comm->forward_comm(this,4);
+
+  // checking if other processors have seen a local dis flag
+
+  MPI_Allreduce(&dis_flag_local, &dis_flag, 1, MPI_INT, MPI_MAX, world);
+
+  // call pre_exchange at next timestep
+  if (dis_flag >= 1){
+    next_reneighbor = update->ntimestep + 1;
+  }
+  
 
   // array_atom is a per-atom array which can be dumped for visualization purposes in ovito
   for (int i = 0; i < nlocal; i++) {
