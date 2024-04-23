@@ -55,6 +55,15 @@ class FixEntangle : public Fix {
   double dis_flag;
   double n_critical;
 
+
+  void process_broken(int, int);
+  void update_special();
+  void update_topology();
+
+  // Create an array to store bonds broken this timestep (new)
+  // and since the last neighbor list build
+  std::vector<std::pair<tagint, tagint>> new_broken_pairs;
+
   class RanMars *random;
 
   int countflag, commflag;
