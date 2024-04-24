@@ -32,7 +32,7 @@ class FixEntangle : public Fix {
   void post_constructor();
   void init();
   void setup(int) override;
-  void pre_force(int);
+  void pre_force(int) override;
   void pre_exchange() override;
 
   int pack_forward_comm(int, int *, double *, int, int *);
@@ -52,11 +52,12 @@ class FixEntangle : public Fix {
   double **nu;
   double **N_0;
   double **N_rest;
-  double dis_flag;
+  int dis_flag;
   double n_critical;
 
 
   void process_broken(int, int);
+  void update_nvar(tagint, tagint);
   void update_special();
   void update_topology();
 

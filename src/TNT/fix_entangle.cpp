@@ -107,7 +107,7 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
   }
 
   // Set forward communication size
-  comm_forward = 1+atom->maxspecial;
+  comm_forward = 1 + atom->maxspecial;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -132,8 +132,8 @@ FixEntangle::~FixEntangle()
 int FixEntangle::setmask()
 {
   int mask = 0;
-  mask |= PRE_FORCE;
   mask |= PRE_EXCHANGE;
+  mask |= PRE_FORCE;
   return mask;
 }
 
@@ -141,6 +141,7 @@ int FixEntangle::setmask()
 
 void FixEntangle::post_constructor()
 {
+
   // CREATE A CALL TO FIX PROPERTY/ATOM //
   new_fix_id = utils::strdup(id + std::string("_FIX_PA"));
   modify->add_fix(fmt::format("{} {} property/atom d2_nvar_{} {} ghost yes",new_fix_id, group->names[igroup],id,std::to_string(4)));
@@ -148,6 +149,21 @@ void FixEntangle::post_constructor()
   // RETURN THE INDEX OF OUR LOCALLY STORED ATOM ARRAY //
   int tmp1, tmp2;
   index = atom->find_custom(utils::strdup(std::string("nvar_")+id),tmp1,tmp2);
+
+  // Create memory allocations
+  nmax = atom->nmax;
+  memory->create(nu,nmax,2,"entangle:nu");
+  
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixEntangle::init()
+{
+
+    // Only run this in the beginning of simulation (transferring nvar data from velocities to actual peratom array)
+  if (countflag) return;
+  countflag = 1;
 
   // nvar IS THE POINTER TO OUR STATE VARIABLE ARRAY! //
   double **nvar = atom->darray[index];
@@ -181,7 +197,11 @@ void FixEntangle::post_constructor()
     nvar[i][0] = v[i][0]; 
     nvar[i][1] = v[i][1];
     nvar[i][2] = v[i][2];
-    nvar[i][3] = radius[i]*2;
+    if (radius[i]==0){
+      nvar[i][3] = -1;
+    } else {
+      nvar[i][3] = radius[i]*2;
+    }
 
     v[i][0] = 0;
     v[i][1] = 0;
@@ -190,53 +210,13 @@ void FixEntangle::post_constructor()
 
   commflag = 1;
   comm->forward_comm(this,4);
-
-
-  // Create memory allocations
-  nmax = atom->nmax;
-  memory->create(nu,nmax,2,"entangle:nu");
-  memory->create(N_rest,nlocal,2,"entangle:N_rest");
-  memory->create(N_0,nlocal,2,"entangle:N_0");
-  
-}
-
-/* ---------------------------------------------------------------------- */
-
-void FixEntangle::init()
-{
-
 }
 
 /* ---------------------------------------------------------------------- */
 
 void FixEntangle::setup(int vflag)
 {
-  if (utils::strmatch(update->integrate_style, "^verlet")){
-    pre_force(vflag);
-  }
-
-  // Only run this in the beginning of simulation (transferring nvar data from velocities to actual peratom array)
-  if (countflag) return;
-  countflag = 1;
-
-  // LOCATE THE POINTER TO OUR VARIABLE
-  int tmp1, tmp2;
-  double **nvar = atom->darray[index];
-
-  // local atom count
-  int nlocal = atom->nlocal;
-  
-  // [nvar] = [Leftside monomer count | Rightside monomer count | dangling end flag or Anchor point timer | chain tagID]
-  // for (int i = 0; i < nlocal; i++) {
-  //   nvar[i][0] = v[i][0];
-  //   nvar[i][1] = v[i][1];
-  //   nvar[i][2] = v[i][2];
-  //   nvar[i][3] = radius[i]*2;
-  // }
-
-  // commflag = 1;
-  // comm->forward_comm(this,4);
-
+  pre_force(vflag);
 }
 
 /* ----------------------------------------------------------------------
@@ -246,10 +226,12 @@ void FixEntangle::setup(int vflag)
 ------------------------------------------------------------------------- */
 
 void FixEntangle::pre_exchange(){
-  printf("\n\n timestep : %ld\n\n",update->ntimestep);
+
+  if (me==0) printf("\n\n timestep in pre exchange : %ld\n\n",update->ntimestep);
   // don't proceed if no disentanglement has been detected
   if (dis_flag == 0) return;
-  printf("\n\n timestep : %ld\n\n",update->ntimestep);
+  if (me==0) printf("\n\n timestep in pre exchange (After admission): %ld\n\n",update->ntimestep);
+  // printf("\n\n timestep : %ld\n\n",update->ntimestep);
   // local atom count
   int nlocal = atom->nlocal;
 
@@ -275,7 +257,7 @@ void FixEntangle::pre_exchange(){
   int ENT_pair_tmp;
 
   for (int i = 0; i < nlocal; i++){
-    if ((nvar[i][2] == -1 && nvar[i][0] < n_critical) || (nvar[i][2] == 1 && nvar[i][1] < n_critical)){
+    if ((nvar[i][2] == -1 && nvar[i][0] < n_critical) || (nvar[i][3] == -1 && nvar[i][1] < n_critical)){
       //here a dangling end which is going to disentangle is identified "i"
 
       for (int j = 0; j < num_bond[i]; j++){
@@ -288,7 +270,7 @@ void FixEntangle::pre_exchange(){
         ENT_pair = domain->closest_image(i,ENT_pair_tmp);
       }
 
-      if (nvar[ENT_pair][2] == 1 || nvar[ENT_pair][2] == -1){
+      if (nvar[ENT_pair][3] == -1 || nvar[ENT_pair][2] == -1){
         // Case "A" disentanglement is identified (two dangling ends entangled)
         delete_ids[0] = tag[i];
         delete_ids[1] = tag[ENT_pair];
@@ -296,7 +278,7 @@ void FixEntangle::pre_exchange(){
       }
     }
   }
-  printf("\n\n Processor %d : atoms to delete {%d , %d}\n\n",me,delete_ids[0],delete_ids[1]);
+  //printf("\n\n Processor %d : atoms to delete {%d , %d}\n\n",me,delete_ids[0],delete_ids[1]);
   double rand_number = 0;
 
   if (delete_ids[0] != 0 && delete_ids[1] != 0){
@@ -313,7 +295,7 @@ void FixEntangle::pre_exchange(){
   local.random_num = rand_number;
   local.rank = me;
 
-  printf("\n\nlocal random number : %f\n\n",local.random_num);
+  //printf("\n\nlocal random number : %f\n\n",local.random_num);
 
   global.random_num = 0;
   global.rank = 0;
@@ -324,13 +306,15 @@ void FixEntangle::pre_exchange(){
     error->one(FLERR,"Inconsistent dis_flag has been set in previous timestep");
   } 
 
-  printf("\n\nglobal random number : %f\n\n",global.random_num);
+  // printf("\n\nglobal random number : %f\n\n",global.random_num);
 
   int chosen_rank = global.rank;
 
   MPI_Bcast(&delete_ids,2,MPI_INT,chosen_rank,world);
 
-  printf("\n\n Processor %d : atoms to delete {%d , %d}\n\n",me,delete_ids[0],delete_ids[1]);
+  // printf("\n\n Processor %d : atoms to delete {%d , %d}\n\n",me,delete_ids[0],delete_ids[1]);
+
+  update_nvar(delete_ids[0],delete_ids[1]);
 
   for (int n = 0; n < nbondlist; n++){
     int i1 = bondlist[n][0];
@@ -368,7 +352,9 @@ void FixEntangle::pre_exchange(){
 
  void FixEntangle::pre_force(int vflag)
 { 
-  if (update->ntimestep == 1) return;
+
+  //if (me ==0) printf("\n\ntimestep in preforce:%ld\n\n",update->ntimestep);
+  //if (update->ntimestep == 1) return;
   // Main part of code
   // ATOM COUNTS
   int nlocal = atom->nlocal;
@@ -463,34 +449,30 @@ void FixEntangle::pre_exchange(){
     int LHS_atom = -1;
     int RHS_atom = -1;
 
-    for (int jj=0; jj < num_bond[i]; jj++){
-      
-      int bonded_atom_tmp = atom->map(bond_atom[i][jj]);
-
-      if (bonded_atom_tmp < 0) {
-        error->one(FLERR,"Fix entangle needs ghost atoms from further away");
+    if (nvar[i][2] != -1){
+      int LHS_atom_tmp = atom->map(nvar[i][2]);
+      if (LHS_atom_tmp < 0) {
+          error->one(FLERR,"Fix entangle needs ghost atoms from further away");
       }
+      LHS_atom = domain->closest_image(i,LHS_atom_tmp);
+    }
 
-      int bonded_atom = domain->closest_image(i,bonded_atom_tmp);
-      
-      if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]-1){
-        LHS_atom = bonded_atom;
+    if (nvar[i][3] != -1){
+      int RHS_atom_tmp = atom->map(nvar[i][3]);
+      if (RHS_atom_tmp < 0) {
+          error->one(FLERR,"Fix entangle needs ghost atoms from further away");
       }
-
-      if (bond_type[i][jj]==1 && nvar[bonded_atom][3]==nvar[i][3]+1){
-        RHS_atom = bonded_atom;
-      }
+      RHS_atom = domain->closest_image(i,RHS_atom_tmp);
     }
 
     // checking if prev and next atoms are right
-
     if (nvar[i][2] != -1){
       if (LHS_atom == -1){
         error->one(FLERR,"Inconsistent finding of previous atom");
       }
     }
 
-    if (nvar[i][2] != 1){
+    if (nvar[i][3] != -1){
       if (RHS_atom == -1){
         error->one(FLERR,"Inconsistent finding of next atom");
       }
@@ -526,7 +508,7 @@ void FixEntangle::pre_exchange(){
       delz1 = 0;
     }
 
-    if (nvar[i][2] != 1){   
+    if (nvar[i][3] != -1){   
       delx2 = x[RHS_atom][0] - x[i][0];
       dely2 = x[RHS_atom][1] - x[i][1];
       delz2 = x[RHS_atom][2] - x[i][2];
@@ -591,24 +573,24 @@ void FixEntangle::pre_exchange(){
       v_tally(i, P);
     }
 
-    // force magnitudes
-    double fbond1 = 0;
-    double fbond2 = 0;
+    // // force magnitudes
+    // double fbond1 = 0;
+    // double fbond2 = 0;
 
-    // calculate the force magnitude from each side of the entanglement for calculation of sliding rate
-    double fbond1_squared = (fbond1x * fbond1x) + (fbond1y * fbond1y) + (fbond1z * fbond1z);
-    fbond1 = sqrt(fbond1_squared);
+    // // calculate the force magnitude from each side of the entanglement for calculation of sliding rate
+    // double fbond1_squared = (fbond1x * fbond1x) + (fbond1y * fbond1y) + (fbond1z * fbond1z);
+    // fbond1 = sqrt(fbond1_squared);
     
-    // since the fbond1 might be a repulsive, we should check (delx1 is always calculated as it is a tensile vector so if fbondx1 and delx1 are in reverse direction it means fbond1 is repulsive)
-    if (delx1*fbond1x<0){
-      fbond1 = -fbond1;
-    }
+    // // since the fbond1 might be a repulsive, we should check (delx1 is always calculated as it is a tensile vector so if fbondx1 and delx1 are in reverse direction it means fbond1 is repulsive)
+    // if (delx1*fbond1x<0){
+    //   fbond1 = -fbond1;
+    // }
 
-    double fbond2_squared = (fbond2x * fbond2x) + (fbond2y * fbond2y) + (fbond2z * fbond2z);
-    fbond2 = sqrt(fbond2_squared);
-    if (delx2*fbond2x<0){
-      fbond2 = -fbond2;
-    }
+    // double fbond2_squared = (fbond2x * fbond2x) + (fbond2y * fbond2y) + (fbond2z * fbond2z);
+    // fbond2 = sqrt(fbond2_squared);
+    // if (delx2*fbond2x<0){
+    //   fbond2 = -fbond2;
+    // }
 
     // calculation of osmossic pressure
     double Pi_1, Pi_2;
@@ -634,14 +616,14 @@ void FixEntangle::pre_exchange(){
     if (nvar[i][2] == -1){
       if (nvar[i][0] < n_critical){
         nu_rate = 0;
-        dis_flag_local = 1;
+        // dis_flag_local = 1;
       }
     }
 
-    if (nvar[i][2] == 1){
+    if (nvar[i][3] == -1){
       if (nvar[i][1] < n_critical){
         nu_rate = 0;
-        dis_flag_local = 1;
+        // dis_flag_local = 1;
       }
     }
 
@@ -653,7 +635,7 @@ void FixEntangle::pre_exchange(){
       nu[LHS_atom][1] += (nu_rate * (-1));
     }
 
-    if (nvar[i][2] != 1){
+    if (nvar[i][3] != -1){
       nu[RHS_atom][0] += (nu_rate * (+1));
     }
     
@@ -673,19 +655,13 @@ void FixEntangle::pre_exchange(){
     nvar[j][1] = nvar[j][1] + nu[j][1] * update->dt;
   }
 
+  // printf("nvar :  \n")
+
   // forward communication of nvar so other processors update their ghosts
   commflag = 1;
   comm->forward_comm(this,4);
 
-  // checking if other processors have seen a local dis flag
 
-  MPI_Allreduce(&dis_flag_local, &dis_flag, 1, MPI_INT, MPI_MAX, world);
-
-  // call pre_exchange at next timestep
-  if (dis_flag == 1){
-    next_reneighbor = update->ntimestep + 1;
-  }
-  
 
   // array_atom is a per-atom array which can be dumped for visualization purposes in ovito
   for (int i = 0; i < nlocal; i++) {
@@ -706,10 +682,114 @@ void FixEntangle::pre_exchange(){
       array_atom[i][5] = (nu[i][1]);
     }
   }
-  
+
   printcounter = printcounter + 1;
 
+  if (update->ntimestep == 0) return;
+
+
+  dis_flag_local = 0;
+
+
+  for (int j = 0; j < nlocal; j++){
+    if (nvar[j][2] == -1){
+      if (nvar[j][0] < n_critical){
+        dis_flag_local = 1;
+        break;
+      }
+    }
+
+    if (nvar[j][3] == -1){
+      if (nvar[j][1] < n_critical){
+
+        dis_flag_local = 1;
+        break;
+      }
+    }
+  }
+
+
+  // checking if other processors have seen a local dis flag
+
+  MPI_Allreduce(&dis_flag_local, &dis_flag, 1, MPI_INT, MPI_MAX, world);
+
+  if (me==0) printf("\n\ndis_flag_local of processor (%d) : %d at timestep : %ld\n\n",me,dis_flag_local,update->ntimestep);
+  if (me==0) printf("\n\nglobal dis flag of prcoessor (%d) = %d\n\n",me,dis_flag);
+
+  // call pre_exchange at next timestep
+  if (dis_flag == 1){
+    next_reneighbor = update->ntimestep + 1;
+  }
   
+
+
+  
+  
+
+  
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixEntangle::update_nvar(tagint id1, tagint id2){
+
+
+  int nlocal = atom->nlocal;
+  tagint *tag = atom->tag;
+
+  // per-atom state variable
+  double **nvar = atom->darray[index];
+
+  // BOND INFORMATION
+  int *num_bond = atom->num_bond;
+  int **bond_type = atom->bond_type;
+  tagint **bond_atom = atom->bond_atom;
+
+  // bond list from neighbor class
+  int **bondlist = neighbor->bondlist;
+  int nbondlist = neighbor->nbondlist;
+
+  int local_id1 = atom->map(id1);
+  int local_id2 = atom->map(id2);
+
+  if (local_id1 < 0 || local_id2 < 0){
+    error->one(FLERR,"Fix entangle needs ghost atoms from further away");
+  }
+
+  for (int i = 0; i < nlocal; i++){
+    if (tag[i] == id1 || tag[i] == id2) continue;
+
+    // for (int jj = 0; jj < num_bond[i]; jj++){
+    //   if (bond_atom[i][jj]==id1 || bond_atom[i][jj]==id2){
+        if (nvar[i][2] == id1){
+          nvar[i][0] = nvar[i][0] + nvar[local_id1][0];
+          nvar[i][2] = -1;
+        } else if (nvar[i][2] == id2){
+          nvar[i][0] = nvar[i][0] + nvar[local_id2][0];
+          nvar[i][2] = -1;
+        }
+
+        if (nvar[i][3] == id1){
+          nvar[i][1] = nvar[i][1] + nvar[local_id1][1];
+          nvar[i][3] = -1;
+          printf("atom to be manipulated on nvar : %d  (tag %d)   nvar = [%f  %f  %f  %f]\n",i,tag[i],nvar[i][0],nvar[i][1],nvar[i][2],nvar[i][3]);
+        } else if (nvar[i][3] == id2){
+          nvar[i][1] = nvar[i][1] + nvar[local_id2][1];
+          nvar[i][3] = -1;
+          printf("atom to be manipulated on nvar : %d  (tag %d)   nvar = [%f  %f  %f  %f]\n",i,tag[i],nvar[i][0],nvar[i][1],nvar[i][2],nvar[i][3]);
+        }
+
+    //   }
+
+    // }
+
+  }
+
+
+  commflag = 1;
+  comm->forward_comm(this,4);
+
+
 }
 
 /* ---------------------------------------------------------------------- */
