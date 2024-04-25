@@ -59,6 +59,12 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
   nevery = utils::inumeric(FLERR,arg[3],false,lmp);
   if (nevery <= 0) error->all(FLERR,"Illegal fix entangle command");
 
+  zeta = utils::numeric(FLERR,arg[4],false,lmp);
+  if (zeta <= 0) error->all(FLERR,"Illegal fix entangle command - zeta should be greater than 0");
+
+  n_critical = utils::numeric(FLERR,arg[5],false,lmp);
+  if (n_critical <= 0) error->all(FLERR,"Illegal fix entangle command - zeta should be greater than 0");
+
   // SOME FLAGS... worry about later //
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world,&nprocs);
@@ -90,8 +96,6 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
   N_0 = nullptr;
 
   nmax = atom->nmax;
-
-  n_critical = 5;
 
   // set up reneighboring
   force_reneighbor = 1;
@@ -226,11 +230,10 @@ void FixEntangle::setup(int vflag)
 ------------------------------------------------------------------------- */
 
 void FixEntangle::pre_exchange(){
-
-  if (me==0) printf("\n\n timestep in pre exchange : %ld\n\n",update->ntimestep);
+  //if (me==0) printf("\n\n timestep in pre exchange : %ld\n\n",update->ntimestep);
   // don't proceed if no disentanglement has been detected
   if (dis_flag == 0) return;
-  if (me==0) printf("\n\n timestep in pre exchange (After admission): %ld\n\n",update->ntimestep);
+  printf("\n\n timestep in pre exchange (After admission): %ld\n\n",update->ntimestep);
   // printf("\n\n timestep : %ld\n\n",update->ntimestep);
   // local atom count
   int nlocal = atom->nlocal;
@@ -266,8 +269,8 @@ void FixEntangle::pre_exchange(){
           if (ENT_pair_tmp < 0) {
             error->one(FLERR,"Fix entangle needs ghost atoms from further away");
           }
+          ENT_pair = domain->closest_image(i,ENT_pair_tmp);
         }
-        ENT_pair = domain->closest_image(i,ENT_pair_tmp);
       }
 
       if (nvar[ENT_pair][3] == -1 || nvar[ENT_pair][2] == -1){
@@ -303,6 +306,7 @@ void FixEntangle::pre_exchange(){
   MPI_Allreduce(&local, &global, 1, MPI_DOUBLE_INT, MPI_MAXLOC, world);
 
   if (global.random_num == 0){
+    return;
     error->one(FLERR,"Inconsistent dis_flag has been set in previous timestep");
   } 
 
@@ -322,7 +326,7 @@ void FixEntangle::pre_exchange(){
     int type = bondlist[n][2];
 
     // delete any bond that has connection two any of delete_ids
-    if (tag[i1] == delete_ids[0] || tag[i2] == delete_ids[0] || tag[i1] == delete_ids[1] || tag[i2] == delete_ids[2]){
+    if (tag[i1] == delete_ids[0] || tag[i2] == delete_ids[0] || tag[i1] == delete_ids[1] || tag[i2] == delete_ids[1]){
       process_broken(i1,i2);
     }
 
@@ -337,14 +341,37 @@ void FixEntangle::pre_exchange(){
 
   update_topology();
   
+  int local_id1 = atom->map(delete_ids[0]);
+  int local_id2 = atom->map(delete_ids[1]);
 
-  if (atom->map(delete_ids[0]) != -1){ // only attempt to delete if atom is owned
-    // run delete atom method with input atom id
+  if (local_id1 < nlocal && local_id1 > -1) {
+    printf("\n(PASSED !!) PROCESSOR NUMBER : %d is trying to delete atom : %d\n",me,delete_ids[0]);
+
+    AtomVec *avec = atom->avec;
+    avec->copy(atom->nlocal - 1, local_id1, 1);
+    atom->nlocal--;
+  }
+  if (local_id2 < nlocal && local_id2 > -1) {
+    printf("\n(PASSED !!) PROCESSOR NUMBER : %d is trying to delete atom : %d\n",me,delete_ids[1]);
+
+    AtomVec *avec = atom->avec;
+    avec->copy(atom->nlocal - 1, local_id2, 1);
+    atom->nlocal--;
   }
 
-  if (atom->map(delete_ids[1]) != -1){ // only attempt to delete if atom is owned
-    // run delete atom method with input atom id
+  // // Attempt to delete particle pair (Each processor only deletes owned atoms)
+  // delete_atom(delete_ids[0],local_id1);
+  // delete_atom(delete_ids[1],local_id2);
+
+  // MPI_Barrier(world);
+
+  atom->natoms -= 2;
+  if (atom->map_style != Atom::MAP_NONE) {
+    atom->nghost = 0;
+    atom->map_init();
+    atom->map_set();
   }
+
 
 }
 
@@ -353,8 +380,6 @@ void FixEntangle::pre_exchange(){
  void FixEntangle::pre_force(int vflag)
 { 
 
-  //if (me ==0) printf("\n\ntimestep in preforce:%ld\n\n",update->ntimestep);
-  //if (update->ntimestep == 1) return;
   // Main part of code
   // ATOM COUNTS
   int nlocal = atom->nlocal;
@@ -492,7 +517,7 @@ void FixEntangle::pre_exchange(){
     double r2 = 0;
 
     // defining kuhn length
-    double b = 1;
+    double b = 0.05;
 
     if (nvar[i][2] != -1){
       delx1 = x[LHS_atom][0] - x[i][0];
@@ -553,7 +578,7 @@ void FixEntangle::pre_exchange(){
     }
     
     // sliding friction coefficient
-    double zeta = 1;
+    //zeta = 1;
 
     // here we pass the sum of the forces on each particle to the f[] array for use of other fixes
     // we also calculate the virial contributions and pass them via vtally()
@@ -644,7 +669,7 @@ void FixEntangle::pre_exchange(){
   }
   
   if (printcounter % 10000 == 0  || printcounter == 2){
-  printf("average sliding rate : %f\n\n",AVGnu);
+  //printf("average sliding rate : %f\n\n",AVGnu);
   }
   // reverse communication of nu so ghost atoms aquire their sliding rates
   comm->reverse_comm(this,2);
@@ -655,7 +680,6 @@ void FixEntangle::pre_exchange(){
     nvar[j][1] = nvar[j][1] + nu[j][1] * update->dt;
   }
 
-  // printf("nvar :  \n")
 
   // forward communication of nvar so other processors update their ghosts
   commflag = 1;
@@ -685,6 +709,7 @@ void FixEntangle::pre_exchange(){
 
   printcounter = printcounter + 1;
 
+  // do not allow any disentanglement to happen at (timestep = 0)
   if (update->ntimestep == 0) return;
 
 
@@ -694,6 +719,32 @@ void FixEntangle::pre_exchange(){
   for (int j = 0; j < nlocal; j++){
     if (nvar[j][2] == -1){
       if (nvar[j][0] < n_critical){
+        // int next_particle = atom->map(nvar[j][3]);
+        // if (next_particle < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
+        // if (nvar[next_particle][3] == -1) continue;   // do not disentangle single sub-chain chains
+
+        // // check if the pair particle is part of a single sub-chain chain
+        // int Ent_pair;
+        // for (int nn = 0; nn < num_bond[j]; nn++){
+        //   if (bond_type[j][nn] == 2){
+        //     tagint Ent_pair_tag = bond_atom[j][nn];
+        //     Ent_pair = atom->map(Ent_pair_tag);
+        //     if (Ent_pair < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
+        //   }
+        // }
+        // if (nvar[Ent_pair][2] == -1){
+        //   tagint pair_right_tag = nvar[Ent_pair][3];
+        //   int pair_right = atom->map(pair_right_tag);
+        //   if (pair_right < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
+        //   if (nvar[pair_right][3] == -1) continue;    // do not disentangle single sub-chain chains
+        // }
+        // if (nvar[Ent_pair][3] == -1){
+        //   tagint pair_left_tag = nvar[Ent_pair][2];
+        //   int pair_left = atom->map(pair_left_tag);
+        //   if (pair_left < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
+        //   if (nvar[pair_left][2] == -1) continue;    // do not disentangle single sub-chain chains
+        // }
+
         dis_flag_local = 1;
         break;
       }
@@ -701,7 +752,31 @@ void FixEntangle::pre_exchange(){
 
     if (nvar[j][3] == -1){
       if (nvar[j][1] < n_critical){
+        // int prev_particle = atom->map(nvar[j][2]);
+        // if (prev_particle < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
+        // if (nvar[prev_particle][2] == -1) continue;   // do not disentangle single sub-chain chains
 
+        // // check if the pair particle is part of a single sub-chain chain
+        // int Ent_pair;
+        // for (int nn = 0; nn < num_bond[j]; nn++){
+        //   if (bond_type[j][nn] == 2){
+        //     tagint Ent_pair_tag = bond_atom[j][nn];
+        //     Ent_pair = atom->map(Ent_pair_tag);
+        //     if (Ent_pair < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
+        //   }
+        // }
+        // if (nvar[Ent_pair][2] == -1){
+        //   tagint pair_right_tag = nvar[Ent_pair][3];
+        //   int pair_right = atom->map(pair_right_tag);
+        //   if (pair_right < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
+        //   if (nvar[pair_right][3] == -1) continue;    // do not disentangle single sub-chain chains
+        // }
+        // if (nvar[Ent_pair][3] == -1){
+        //   tagint pair_left_tag = nvar[Ent_pair][2];
+        //   int pair_left = atom->map(pair_left_tag);
+        //   if (pair_left < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
+        //   if (nvar[pair_left][2] == -1) continue;    // do not disentangle single sub-chain chains
+        // }
         dis_flag_local = 1;
         break;
       }
@@ -713,19 +788,11 @@ void FixEntangle::pre_exchange(){
 
   MPI_Allreduce(&dis_flag_local, &dis_flag, 1, MPI_INT, MPI_MAX, world);
 
-  if (me==0) printf("\n\ndis_flag_local of processor (%d) : %d at timestep : %ld\n\n",me,dis_flag_local,update->ntimestep);
-  if (me==0) printf("\n\nglobal dis flag of prcoessor (%d) = %d\n\n",me,dis_flag);
-
   // call pre_exchange at next timestep
   if (dis_flag == 1){
     next_reneighbor = update->ntimestep + 1;
   }
   
-
-
-  
-  
-
   
 }
 
@@ -759,29 +826,21 @@ void FixEntangle::update_nvar(tagint id1, tagint id2){
   for (int i = 0; i < nlocal; i++){
     if (tag[i] == id1 || tag[i] == id2) continue;
 
-    // for (int jj = 0; jj < num_bond[i]; jj++){
-    //   if (bond_atom[i][jj]==id1 || bond_atom[i][jj]==id2){
-        if (nvar[i][2] == id1){
-          nvar[i][0] = nvar[i][0] + nvar[local_id1][0];
-          nvar[i][2] = -1;
-        } else if (nvar[i][2] == id2){
-          nvar[i][0] = nvar[i][0] + nvar[local_id2][0];
-          nvar[i][2] = -1;
-        }
+    if (nvar[i][2] == id1){
+      nvar[i][0] = nvar[i][0] + nvar[local_id1][0];
+      nvar[i][2] = -1;
+    } else if (nvar[i][2] == id2){
+      nvar[i][0] = nvar[i][0] + nvar[local_id2][0];
+      nvar[i][2] = -1;
+    }
 
-        if (nvar[i][3] == id1){
-          nvar[i][1] = nvar[i][1] + nvar[local_id1][1];
-          nvar[i][3] = -1;
-          printf("atom to be manipulated on nvar : %d  (tag %d)   nvar = [%f  %f  %f  %f]\n",i,tag[i],nvar[i][0],nvar[i][1],nvar[i][2],nvar[i][3]);
-        } else if (nvar[i][3] == id2){
-          nvar[i][1] = nvar[i][1] + nvar[local_id2][1];
-          nvar[i][3] = -1;
-          printf("atom to be manipulated on nvar : %d  (tag %d)   nvar = [%f  %f  %f  %f]\n",i,tag[i],nvar[i][0],nvar[i][1],nvar[i][2],nvar[i][3]);
-        }
-
-    //   }
-
-    // }
+    if (nvar[i][3] == id1){
+      nvar[i][1] = nvar[i][1] + nvar[local_id1][1];
+      nvar[i][3] = -1;
+    } else if (nvar[i][3] == id2){
+      nvar[i][1] = nvar[i][1] + nvar[local_id2][1];
+      nvar[i][3] = -1;
+    }
 
   }
 

@@ -54,6 +54,7 @@ class FixEntangle : public Fix {
   double **N_rest;
   int dis_flag;
   double n_critical;
+  double zeta;
 
 
   void process_broken(int, int);
