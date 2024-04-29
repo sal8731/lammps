@@ -58,6 +58,7 @@ class FixEntangle : public Fix {
 
 
   void process_broken(int, int);
+  void process_created(int, int);
   void update_nvar(tagint, tagint);
   void update_special();
   void update_topology();
@@ -65,6 +66,7 @@ class FixEntangle : public Fix {
   // Create an array to store bonds broken this timestep (new)
   // and since the last neighbor list build
   std::vector<std::pair<tagint, tagint>> new_broken_pairs;
+  std::vector<std::pair<tagint, tagint>> new_created_pairs;
 
   class RanMars *random;
 

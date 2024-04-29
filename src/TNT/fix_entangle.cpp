@@ -230,11 +230,9 @@ void FixEntangle::setup(int vflag)
 ------------------------------------------------------------------------- */
 
 void FixEntangle::pre_exchange(){
-  //if (me==0) printf("\n\n timestep in pre exchange : %ld\n\n",update->ntimestep);
+
   // don't proceed if no disentanglement has been detected
   if (dis_flag == 0) return;
-  printf("\n\n timestep in pre exchange (After admission): %ld\n\n",update->ntimestep);
-  // printf("\n\n timestep : %ld\n\n",update->ntimestep);
   // local atom count
   int nlocal = atom->nlocal;
 
@@ -269,21 +267,17 @@ void FixEntangle::pre_exchange(){
           if (ENT_pair_tmp < 0) {
             error->one(FLERR,"Fix entangle needs ghost atoms from further away");
           }
-          ENT_pair = domain->closest_image(i,ENT_pair_tmp);
+          ENT_pair = domain->closest_image(i,ENT_pair_tmp);  
         }
       }
 
-      if (nvar[ENT_pair][3] == -1 || nvar[ENT_pair][2] == -1){
-        // Case "A" disentanglement is identified (two dangling ends entangled)
-        delete_ids[0] = tag[i];
-        delete_ids[1] = tag[ENT_pair];
-        break;
-      }
+      delete_ids[0] = tag[i];
+      delete_ids[1] = tag[ENT_pair];
+      break;
     }
   }
-  //printf("\n\n Processor %d : atoms to delete {%d , %d}\n\n",me,delete_ids[0],delete_ids[1]);
-  double rand_number = 0;
 
+  double rand_number = 0;
   if (delete_ids[0] != 0 && delete_ids[1] != 0){
     rand_number = random->uniform();
   }
@@ -293,12 +287,8 @@ void FixEntangle::pre_exchange(){
     int rank;
   } local, global;
 
-
-
   local.random_num = rand_number;
   local.rank = me;
-
-  //printf("\n\nlocal random number : %f\n\n",local.random_num);
 
   global.random_num = 0;
   global.rank = 0;
@@ -306,17 +296,14 @@ void FixEntangle::pre_exchange(){
   MPI_Allreduce(&local, &global, 1, MPI_DOUBLE_INT, MPI_MAXLOC, world);
 
   if (global.random_num == 0){
-    return;
     error->one(FLERR,"Inconsistent dis_flag has been set in previous timestep");
   } 
-
-  // printf("\n\nglobal random number : %f\n\n",global.random_num);
 
   int chosen_rank = global.rank;
 
   MPI_Bcast(&delete_ids,2,MPI_INT,chosen_rank,world);
 
-  // printf("\n\n Processor %d : atoms to delete {%d , %d}\n\n",me,delete_ids[0],delete_ids[1]);
+  // at this point all processors have the same delete_ids
 
   update_nvar(delete_ids[0],delete_ids[1]);
 
@@ -327,12 +314,11 @@ void FixEntangle::pre_exchange(){
 
     // delete any bond that has connection two any of delete_ids
     if (tag[i1] == delete_ids[0] || tag[i2] == delete_ids[0] || tag[i1] == delete_ids[1] || tag[i2] == delete_ids[1]){
+      if (me == 2) printf("\nbond between %d (tag %d) and %d (tag %d) is broken\n\n",i1,tag[i1],i2,tag[i2]);
       process_broken(i1,i2);
     }
 
   }
-
-  update_special();
 
   // communicate final partner and 1-2 special neighbors
   // 1-2 neighs already reflect broken bonds
@@ -340,7 +326,7 @@ void FixEntangle::pre_exchange(){
   comm->forward_comm(this);
 
   update_topology();
-  
+
   int local_id1 = atom->map(delete_ids[0]);
   int local_id2 = atom->map(delete_ids[1]);
 
@@ -359,11 +345,58 @@ void FixEntangle::pre_exchange(){
     atom->nlocal--;
   }
 
-  // // Attempt to delete particle pair (Each processor only deletes owned atoms)
-  // delete_atom(delete_ids[0],local_id1);
-  // delete_atom(delete_ids[1],local_id2);
+  if (update->ntimestep == 122122 && (me == 0 || me == 1)){
+    printf("\n\nat processor %d : tag %d mapped to %d\n\n",me,1468,atom->map(1468));
+    printf("\n\nat processor %d : tag %d mapped to %d\n\n",me,1466,atom->map(1466));
+  } 
 
-  // MPI_Barrier(world);
+    // looping to find the atom which has a new bond in "nvar" but the bond is not created yet (each processor only does this for owned atoms)
+  for (int k = 0; k < nlocal; k++){
+    if (num_bond[k] > 2) continue;
+
+    int found_left = 0;
+    int found_right = 0;
+
+    if (nvar[k][2] != -1){
+      for (int mm = 0; mm < num_bond[k]; mm++){
+        if (bond_atom[k][mm] == nvar[k][2]) found_left = 1;
+      }
+    } else if (nvar[k][2] == -1) found_left = 1;
+
+    if (nvar[k][3] != -1){
+      for (int mm = 0; mm < num_bond[k]; mm++){
+        if (bond_atom[k][mm] == nvar[k][3]) found_right = 1;
+      }
+    } else if (nvar[k][3] == -1) found_right = 1;
+
+    if (found_left == 0){
+      int i1 = k;
+      int i2 = atom->map(nvar[k][2]);
+      printf("\nreconnecting atom %d (tag %d) and %d (tag %f) (ON PROCESSOR %d and timestep %ld) \n",i1,tag[i1],i2,nvar[k][2],me,update->ntimestep);
+      if (i2 < 0) error->one(FLERR,"trying to access an atom far away");
+
+      process_created(i1,i2);
+      break;
+    }
+
+    if (found_right == 0){
+      int i1 = k;
+      int i2 = atom->map(nvar[k][3]);
+      printf("\nreconnecting atom %d (tag %d) and %d (tag %f) (ON PROCESSOR %d) \n",i1,tag[i1],i2,nvar[k][3],me);
+      if (i2 < 0) error->one(FLERR,"trying to access an atom far away");
+
+      process_created(i1,i2);
+      break;
+    }
+
+  }
+
+  // communicate final partner and 1-2 special neighbors
+  // 1-2 neighs already reflect broken bonds
+  commflag = 3;
+  comm->forward_comm(this);
+
+  update_topology();
 
   atom->natoms -= 2;
   if (atom->map_style != Atom::MAP_NONE) {
@@ -577,8 +610,6 @@ void FixEntangle::pre_exchange(){
       // ......
     }
     
-    // sliding friction coefficient
-    //zeta = 1;
 
     // here we pass the sum of the forces on each particle to the f[] array for use of other fixes
     // we also calculate the virial contributions and pass them via vtally()
@@ -819,27 +850,35 @@ void FixEntangle::update_nvar(tagint id1, tagint id2){
   int local_id1 = atom->map(id1);
   int local_id2 = atom->map(id2);
 
-  if (local_id1 < 0 || local_id2 < 0){
-    error->one(FLERR,"Fix entangle needs ghost atoms from further away");
-  }
+  // if (local_id1 < 0 || local_id2 < 0){
+  //   error->one(FLERR,"Fix entangle needs ghost atoms from further away");
+  // }
 
   for (int i = 0; i < nlocal; i++){
     if (tag[i] == id1 || tag[i] == id2) continue;
 
     if (nvar[i][2] == id1){
-      nvar[i][0] = nvar[i][0] + nvar[local_id1][0];
-      nvar[i][2] = -1;
+      if (local_id1 >= 0){
+        nvar[i][0] = nvar[i][0] + nvar[local_id1][0];
+        nvar[i][2] = nvar[local_id1][2]; 
+      }
     } else if (nvar[i][2] == id2){
-      nvar[i][0] = nvar[i][0] + nvar[local_id2][0];
-      nvar[i][2] = -1;
+      if(local_id2 >= 0){
+        nvar[i][0] = nvar[i][0] + nvar[local_id2][0];
+        nvar[i][2] = nvar[local_id2][2]; 
+      }
     }
 
     if (nvar[i][3] == id1){
-      nvar[i][1] = nvar[i][1] + nvar[local_id1][1];
-      nvar[i][3] = -1;
+      if (local_id1 >= 0){
+        nvar[i][1] = nvar[i][1] + nvar[local_id1][1];
+        nvar[i][3] = nvar[local_id1][3]; 
+      }
     } else if (nvar[i][3] == id2){
-      nvar[i][1] = nvar[i][1] + nvar[local_id2][1];
-      nvar[i][3] = -1;
+      if(local_id2 >= 0){
+        nvar[i][1] = nvar[i][1] + nvar[local_id2][1];
+        nvar[i][3] = nvar[local_id2][3]; 
+      }
     }
 
   }
@@ -856,7 +895,7 @@ void FixEntangle::update_nvar(tagint id1, tagint id2){
 void FixEntangle::process_broken(int i, int j)
 {
 
-  // First add the pair to new_broken_pairs
+ // First add the pair to new_broken_pairs
   auto tag_pair = std::make_pair(atom->tag[i], atom->tag[j]);
   new_broken_pairs.push_back(tag_pair);
 
@@ -903,55 +942,94 @@ void FixEntangle::process_broken(int i, int j)
     }
   }
 
-}
-
-/* ----------------------------------------------------------------------
-  Update special bond list and atom bond arrays, empty broken/created lists
-------------------------------------------------------------------------- */
-
-void FixEntangle::update_special()
-{
-  int i, j, m, n1;
-  tagint tagi, tagj;
-  int nlocal = atom->nlocal;
-
+  // Update special neighbor list
   tagint *slist;
   int **nspecial = atom->nspecial;
   tagint **special = atom->special;
 
-  for (auto const &it : new_broken_pairs) {
-    tagi = it.first;
-    tagj = it.second;
-    i = atom->map(tagi);
-    j = atom->map(tagj);
-
-      if (i < 0 || j < 0) {
-        error->one(FLERR,"Fix entangle needs ghost atoms "
-                    "from further away");
-      }
-
-    // remove i from special bond list for atom j and vice versa
-    // ignore n2, n3 since 1-3, 1-4 special factors required to be 1.0
-    if (i < nlocal) {
-      slist = special[i];
-      n1 = nspecial[i][0];
-      for (m = 0; m < n1; m++)
-        if (slist[m] == tagj) break;
-      for (; m < n1 - 1; m++) slist[m] = slist[m + 1];
-      nspecial[i][0]--;
-      nspecial[i][1] = nspecial[i][2] = nspecial[i][0];
-    }
-
-    if (j < nlocal) {
-      slist = special[j];
-      n1 = nspecial[j][0];
-      for (m = 0; m < n1; m++)
-        if (slist[m] == tagi) break;
-      for (; m < n1 - 1; m++) slist[m] = slist[m + 1];
-      nspecial[j][0]--;
-      nspecial[j][1] = nspecial[j][2] = nspecial[j][0];
-    }
+  // remove i from special bond list for atom j and vice versa
+  // ignore n2, n3 since 1-3, 1-4 special factors required to be 1.0
+  if (i < nlocal) {
+    slist = special[i];
+    int n1 = nspecial[i][0];
+    int m;
+    for (m = 0; m < n1; m++)
+      if (slist[m] == tag[j]) break;
+    for (; m < n1 - 1; m++) slist[m] = slist[m + 1];
+    nspecial[i][0]--;
+    nspecial[i][1] = nspecial[i][2] = nspecial[i][0];
   }
+
+  if (j < nlocal) {
+    slist = special[j];
+    int n1 = nspecial[j][0];
+    int m;
+    for (int m = 0; m < n1; m++)
+      if (slist[m] == tag[i]) break;
+    for (; m < n1 - 1; m++) slist[m] = slist[m + 1];
+    nspecial[j][0]--;
+    nspecial[j][1] = nspecial[j][2] = nspecial[j][0];
+  }
+
+
+}
+
+/* --------------------------------------------------------------------- */
+
+void FixEntangle::process_created(int i, int j)
+{
+
+  // First add the pair to new_created_pairs
+  auto tag_pair = std::make_pair(atom->tag[i], atom->tag[j]);
+  new_created_pairs.push_back(tag_pair);
+
+  tagint **bond_atom = atom->bond_atom;
+  int **bond_type = atom->bond_type;
+  int *num_bond = atom->num_bond;
+
+  int nlocal = atom->nlocal;
+
+  // Add bonds to atom class for i and j
+  if (i < nlocal) {
+    // if (num_bond[i] == atom->bond_per_atom)
+    //   error->one(FLERR,"New bond exceeded bonds per atom in fix bond/dynamic");
+    bond_type[i][num_bond[i]] = 1;
+    bond_atom[i][num_bond[i]] = atom->tag[j];
+    num_bond[i]++;
+  }
+
+  if (j < nlocal) {
+    // if (num_bond[j] == atom->bond_per_atom)
+    //   error->one(FLERR,"New bond exceeded bonds per atom in fix bond/dynamic");
+    bond_type[j][num_bond[j]] = 1;
+    bond_atom[j][num_bond[j]] = atom->tag[i];
+    num_bond[j]++;
+  }
+
+  // add i to special bond list for atom j and vice versa
+  // ignore n2, n3 since 1-3, 1-4 special factors required to be 1.0
+
+  int **nspecial = atom->nspecial;
+  tagint **special = atom->special;
+
+  if (i < nlocal) {
+    int n1 = nspecial[i][0];
+    if (n1 >= atom->maxspecial)
+      error->one(FLERR, "Special list size exceeded in fix bond/dynamic");
+    special[i][n1] = atom->tag[j];
+    nspecial[i][0] += 1;
+    nspecial[i][1] = nspecial[i][2] = nspecial[i][0];
+  }
+
+  if (j < nlocal) {
+    int n1 = nspecial[j][0];
+    if (n1 >= atom->maxspecial)
+      error->one(FLERR, "Special list size exceeded in fix bond/dynamic");
+    special[j][n1] = atom->tag[i];
+    nspecial[j][0] += 1;
+    nspecial[j][1] = nspecial[j][2] = nspecial[j][0];
+  }
+
 }
 
 /* ----------------------------------------------------------------------
