@@ -63,7 +63,10 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
   if (zeta <= 0) error->all(FLERR,"Illegal fix entangle command - zeta should be greater than 0");
 
   n_critical = utils::numeric(FLERR,arg[5],false,lmp);
-  if (n_critical <= 0) error->all(FLERR,"Illegal fix entangle command - zeta should be greater than 0");
+  if (n_critical <= 0) error->all(FLERR,"Illegal fix entangle command - critical segment count should be greater than 0");
+
+  b = utils::numeric(FLERR,arg[6],false,lmp);
+  if (b <= 0) error->all(FLERR,"Illegal fix entangle command - Kuhn length should be greater than 0");
 
   // SOME FLAGS... worry about later //
   MPI_Comm_rank(world,&me);
@@ -165,7 +168,7 @@ void FixEntangle::post_constructor()
 void FixEntangle::init()
 {
 
-    // Only run this in the beginning of simulation (transferring nvar data from velocities to actual peratom array)
+  // Only run this in the beginning of simulation (transferring nvar data from velocities to actual peratom array)
   if (countflag) return;
   countflag = 1;
 
@@ -228,7 +231,6 @@ void FixEntangle::setup(int vflag)
   done before exchange, borders, reneighbor
   so that ghost atoms and neighbor lists will be correct
 ------------------------------------------------------------------------- */
-
 void FixEntangle::pre_exchange(){
 
   // don't proceed if no disentanglement has been detected
@@ -257,6 +259,7 @@ void FixEntangle::pre_exchange(){
   int ENT_pair;
   int ENT_pair_tmp;
 
+  // looping to find a disentanglement
   for (int i = 0; i < nlocal; i++){
     if ((nvar[i][2] == -1 && nvar[i][0] < n_critical) || (nvar[i][3] == -1 && nvar[i][1] < n_critical)){
       //here a dangling end which is going to disentangle is identified "i"
@@ -277,6 +280,7 @@ void FixEntangle::pre_exchange(){
     }
   }
 
+  // only generate rand_number if delete_ids is assigned with non-zero entries
   double rand_number = 0;
   if (delete_ids[0] != 0 && delete_ids[1] != 0){
     rand_number = random->uniform();
@@ -314,10 +318,8 @@ void FixEntangle::pre_exchange(){
 
     // delete any bond that has connection two any of delete_ids
     if (tag[i1] == delete_ids[0] || tag[i2] == delete_ids[0] || tag[i1] == delete_ids[1] || tag[i2] == delete_ids[1]){
-      if (me == 2) printf("\nbond between %d (tag %d) and %d (tag %d) is broken\n\n",i1,tag[i1],i2,tag[i2]);
       process_broken(i1,i2);
     }
-
   }
 
   // communicate final partner and 1-2 special neighbors
@@ -327,41 +329,45 @@ void FixEntangle::pre_exchange(){
 
   update_topology();
 
+  // only delete owned particles from delete_ids
   int local_id1 = atom->map(delete_ids[0]);
   int local_id2 = atom->map(delete_ids[1]);
 
   if (local_id1 < nlocal && local_id1 > -1) {
-    printf("\n(PASSED !!) PROCESSOR NUMBER : %d is trying to delete atom : %d\n",me,delete_ids[0]);
-
     AtomVec *avec = atom->avec;
     avec->copy(atom->nlocal - 1, local_id1, 1);
     atom->nlocal--;
   }
-  if (local_id2 < nlocal && local_id2 > -1) {
-    printf("\n(PASSED !!) PROCESSOR NUMBER : %d is trying to delete atom : %d\n",me,delete_ids[1]);
 
+  if (local_id2 < nlocal && local_id2 > -1) {
     AtomVec *avec = atom->avec;
     avec->copy(atom->nlocal - 1, local_id2, 1);
     atom->nlocal--;
   }
 
-  if (update->ntimestep == 122122 && (me == 0 || me == 1)){
-    printf("\n\nat processor %d : tag %d mapped to %d\n\n",me,1468,atom->map(1468));
-    printf("\n\nat processor %d : tag %d mapped to %d\n\n",me,1466,atom->map(1466));
-  } 
 
-    // looping to find the atom which has a new bond in "nvar" but the bond is not created yet (each processor only does this for owned atoms)
+  // looping to find the atom which has a new bond in "nvar" but the bond is not created yet (each processor only does this for owned atoms)
   for (int k = 0; k < nlocal; k++){
     if (num_bond[k] > 2) continue;
 
     int found_left = 0;
-    int found_right = 0;
-
+    
     if (nvar[k][2] != -1){
       for (int mm = 0; mm < num_bond[k]; mm++){
         if (bond_atom[k][mm] == nvar[k][2]) found_left = 1;
       }
     } else if (nvar[k][2] == -1) found_left = 1;
+
+    if (found_left == 0){
+      int i1 = k;
+      int i2 = atom->map(nvar[k][2]);
+      if (i2 < 0) error->one(FLERR,"trying to access an atom far away");
+
+      process_created(i1,i2);
+      break;
+    }
+
+    int found_right = 0;
 
     if (nvar[k][3] != -1){
       for (int mm = 0; mm < num_bond[k]; mm++){
@@ -369,20 +375,9 @@ void FixEntangle::pre_exchange(){
       }
     } else if (nvar[k][3] == -1) found_right = 1;
 
-    if (found_left == 0){
-      int i1 = k;
-      int i2 = atom->map(nvar[k][2]);
-      printf("\nreconnecting atom %d (tag %d) and %d (tag %f) (ON PROCESSOR %d and timestep %ld) \n",i1,tag[i1],i2,nvar[k][2],me,update->ntimestep);
-      if (i2 < 0) error->one(FLERR,"trying to access an atom far away");
-
-      process_created(i1,i2);
-      break;
-    }
-
     if (found_right == 0){
       int i1 = k;
       int i2 = atom->map(nvar[k][3]);
-      printf("\nreconnecting atom %d (tag %d) and %d (tag %f) (ON PROCESSOR %d) \n",i1,tag[i1],i2,nvar[k][3],me);
       if (i2 < 0) error->one(FLERR,"trying to access an atom far away");
 
       process_created(i1,i2);
@@ -491,19 +486,14 @@ void FixEntangle::pre_exchange(){
     }
   }
 
-  int dis_flag_local = 0;
-
   //loop over all entanglement points to calculate forces and then the monomer sliding rates
-  for (int i = 0; i < nlocal; i++) { 
-
-    //identifying if it is a dangling end 
+  for (int i = 0; i < nlocal; i++) {
 
     // Check if the atom is in the correct group... keep for generality
     if (!(mask[i] & groupbit)) continue;
 
     //We need a loop to go over columns of bond_atom because each atom is connected to three/one particles to find the left-hand side atom and right-hand side atom to aquire their vectorial distances.
     //We have used the tagID here to find the previous and next atoms (stored in nvar[*][3] for each atom)
-
     int LHS_atom = -1;
     int RHS_atom = -1;
 
@@ -541,17 +531,8 @@ void FixEntangle::pre_exchange(){
     double dely1 = 0;
     double delz1 = 0;
 
-    // components of right-hand side chain vector
-    double delx2 = 0;
-    double dely2 = 0;
-    double delz2 = 0;
-
     double r1 = 0;
-    double r2 = 0;
-
-    // defining kuhn length
-    double b = 0.05;
-
+    
     if (nvar[i][2] != -1){
       delx1 = x[LHS_atom][0] - x[i][0];
       dely1 = x[LHS_atom][1] - x[i][1];
@@ -565,6 +546,13 @@ void FixEntangle::pre_exchange(){
       dely1 = sqrt(2)/2 * r1;
       delz1 = 0;
     }
+
+    // components of right-hand side chain vector
+    double delx2 = 0;
+    double dely2 = 0;
+    double delz2 = 0;
+
+    double r2 = 0;
 
     if (nvar[i][3] != -1){   
       delx2 = x[RHS_atom][0] - x[i][0];
@@ -584,31 +572,14 @@ void FixEntangle::pre_exchange(){
     N_rest[i][0] = pow(r1/b,1.667);
     N_rest[i][1] = pow(r2/b,1.667);
 
-
-    // components of left-hand side force
-    double fbond1x = 0;
-    double fbond1y = 0;
-    double fbond1z = 0;
-
-    // components of right-hand side force
-    double fbond2x = 0;
-    double fbond2y = 0;
-    double fbond2z = 0;
-
     // here we calculate the force components from the left and right hand side sub-chains 
+    double fbond1x = 3 * delx1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delx1/r1;
+    double fbond1y = 3 * dely1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * dely1/r1;
+    double fbond1z = 3 * delz1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delz1/r1;
 
-    fbond1x = 3 * delx1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delx1/r1;
-    fbond1y = 3 * dely1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * dely1/r1;
-    fbond1z = 3 * delz1 / (nvar[i][0] * b * b) - 3 * (b * b * b) * nvar[i][0] * nvar[i][0] / (r1 * r1 * r1 * r1) * delz1/r1;
-
-    fbond2x = 3 * delx2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delx2/r2;
-    fbond2y = 3 * dely2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * dely2/r2;
-    fbond2z = 3 * delz2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delz2/r2;
-
-    //Used to print custom stuff
-    if ((printcounter % 10000)==0){
-      // ......
-    }
+    double fbond2x = 3 * delx2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delx2/r2;
+    double fbond2y = 3 * dely2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * dely2/r2;
+    double fbond2z = 3 * delz2 / (nvar[i][1] * b * b) - 3 * (b * b * b) * nvar[i][1] * nvar[i][1] / (r2 * r2 * r2 * r2) * delz2/r2;
     
 
     // here we pass the sum of the forces on each particle to the f[] array for use of other fixes
@@ -629,34 +600,9 @@ void FixEntangle::pre_exchange(){
       v_tally(i, P);
     }
 
-    // // force magnitudes
-    // double fbond1 = 0;
-    // double fbond2 = 0;
-
-    // // calculate the force magnitude from each side of the entanglement for calculation of sliding rate
-    // double fbond1_squared = (fbond1x * fbond1x) + (fbond1y * fbond1y) + (fbond1z * fbond1z);
-    // fbond1 = sqrt(fbond1_squared);
-    
-    // // since the fbond1 might be a repulsive, we should check (delx1 is always calculated as it is a tensile vector so if fbondx1 and delx1 are in reverse direction it means fbond1 is repulsive)
-    // if (delx1*fbond1x<0){
-    //   fbond1 = -fbond1;
-    // }
-
-    // double fbond2_squared = (fbond2x * fbond2x) + (fbond2y * fbond2y) + (fbond2z * fbond2z);
-    // fbond2 = sqrt(fbond2_squared);
-    // if (delx2*fbond2x<0){
-    //   fbond2 = -fbond2;
-    // }
-
     // calculation of osmossic pressure
-    double Pi_1, Pi_2;
-
-    //Pi_1 = (-0.5 * (r1 / (nvar[i][0]*b)) * (r1 / (nvar[i][0]*b)) - log(1 - (r1 / (nvar[i][0]*b)) * (r1 / (nvar[i][0]*b))) + 2 * r1 * r1 / (r1 * r1 - nvar[i][0] * nvar[i][0] * b * b) + nvar[i][0] * b * b * b / (r1 * r1 * r1));
-    Pi_1 = -3 * r1 * r1 / (2 * b * b) * 1 / (nvar[i][0] * nvar[i][0]) + 2 * b * b * b * nvar[i][0] / (r1 * r1 * r1);
-
-    //Pi_2 = (-0.5 * (r2 / (nvar[i][1]*b)) * (r2 / (nvar[i][1]*b)) - log(1 - (r2 / (nvar[i][1]*b)) * (r2 / (nvar[i][1]*b))) + 2 * r2 * r2 / (r2 * r2 - nvar[i][1] * nvar[i][1] * b * b) + nvar[i][1] * b * b * b / (r2 * r2 * r2));
-    Pi_2 = -3 * r2 * r2 / (2 * b * b) * 1 / (nvar[i][1] * nvar[i][1]) + 2 * b * b * b * nvar[i][1] / (r2 * r2 * r2) ;
-    
+    double Pi_1 = -3 * r1 * r1 / (2 * b * b) * 1 / (nvar[i][0] * nvar[i][0]) + 2 * b * b * b * nvar[i][0] / (r1 * r1 * r1);
+    double Pi_2 = -3 * r2 * r2 / (2 * b * b) * 1 / (nvar[i][1] * nvar[i][1]) + 2 * b * b * b * nvar[i][1] / (r2 * r2 * r2) ;
     
     double Pi_m = Pi_2 - Pi_1;
 
@@ -672,14 +618,12 @@ void FixEntangle::pre_exchange(){
     if (nvar[i][2] == -1){
       if (nvar[i][0] < n_critical){
         nu_rate = 0;
-        // dis_flag_local = 1;
       }
     }
 
     if (nvar[i][3] == -1){
       if (nvar[i][1] < n_critical){
         nu_rate = 0;
-        // dis_flag_local = 1;
       }
     }
 
@@ -698,10 +642,7 @@ void FixEntangle::pre_exchange(){
     // Average sliding magnitude (sometimes printed as a measure of relaxation)
     AVGnu = AVGnu + (sqrt(nu_rate*nu_rate))/nlocal; 
   }
-  
-  if (printcounter % 10000 == 0  || printcounter == 2){
-  //printf("average sliding rate : %f\n\n",AVGnu);
-  }
+
   // reverse communication of nu so ghost atoms aquire their sliding rates
   comm->reverse_comm(this,2);
 
@@ -717,18 +658,9 @@ void FixEntangle::pre_exchange(){
   comm->forward_comm(this,4);
 
 
-
   // array_atom is a per-atom array which can be dumped for visualization purposes in ovito
   for (int i = 0; i < nlocal; i++) {
     if(peratom_flag){
-      if(N_rest[i][0] != 0){  
-      // array_atom[i][0] = (nvar[i][0]/N_rest[i][0] - N_0[i][0]) * 1/(1-N_0[i][0]);
-      // array_atom[i][0] = (nvar[i][0]/N_rest[i][0]);
-      }
-      if(N_rest[i][1] != 0){
-      // array_atom[i][1] = (nvar[i][1]/N_rest[i][1] - N_0[i][1]) * 1/(1-N_0[i][1]);
-      // array_atom[i][1] = (nvar[i][1]/N_rest[i][1]);
-      }  
       array_atom[i][0] = nvar[i][0];
       array_atom[i][1] = nvar[i][1];
       array_atom[i][2] = nvar[i][2];
@@ -740,78 +672,22 @@ void FixEntangle::pre_exchange(){
 
   printcounter = printcounter + 1;
 
+  // Used to print custom stuff
+  if ((printcounter % 10000)==0){
+    // ......
+  }
+
   // do not allow any disentanglement to happen at (timestep = 0)
   if (update->ntimestep == 0) return;
 
 
-  dis_flag_local = 0;
-
-
+  // checking if any potential disentanglement case exisits in owned particles
+  int dis_flag_local = 0;
   for (int j = 0; j < nlocal; j++){
-    if (nvar[j][2] == -1){
-      if (nvar[j][0] < n_critical){
-        // int next_particle = atom->map(nvar[j][3]);
-        // if (next_particle < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
-        // if (nvar[next_particle][3] == -1) continue;   // do not disentangle single sub-chain chains
+    if (nvar[j][2] == -1 && nvar[j][0] < n_critical) dis_flag_local = 1;
+    if (nvar[j][3] == -1 && nvar[j][1] < n_critical) dis_flag_local = 1;
 
-        // // check if the pair particle is part of a single sub-chain chain
-        // int Ent_pair;
-        // for (int nn = 0; nn < num_bond[j]; nn++){
-        //   if (bond_type[j][nn] == 2){
-        //     tagint Ent_pair_tag = bond_atom[j][nn];
-        //     Ent_pair = atom->map(Ent_pair_tag);
-        //     if (Ent_pair < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
-        //   }
-        // }
-        // if (nvar[Ent_pair][2] == -1){
-        //   tagint pair_right_tag = nvar[Ent_pair][3];
-        //   int pair_right = atom->map(pair_right_tag);
-        //   if (pair_right < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
-        //   if (nvar[pair_right][3] == -1) continue;    // do not disentangle single sub-chain chains
-        // }
-        // if (nvar[Ent_pair][3] == -1){
-        //   tagint pair_left_tag = nvar[Ent_pair][2];
-        //   int pair_left = atom->map(pair_left_tag);
-        //   if (pair_left < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
-        //   if (nvar[pair_left][2] == -1) continue;    // do not disentangle single sub-chain chains
-        // }
-
-        dis_flag_local = 1;
-        break;
-      }
-    }
-
-    if (nvar[j][3] == -1){
-      if (nvar[j][1] < n_critical){
-        // int prev_particle = atom->map(nvar[j][2]);
-        // if (prev_particle < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
-        // if (nvar[prev_particle][2] == -1) continue;   // do not disentangle single sub-chain chains
-
-        // // check if the pair particle is part of a single sub-chain chain
-        // int Ent_pair;
-        // for (int nn = 0; nn < num_bond[j]; nn++){
-        //   if (bond_type[j][nn] == 2){
-        //     tagint Ent_pair_tag = bond_atom[j][nn];
-        //     Ent_pair = atom->map(Ent_pair_tag);
-        //     if (Ent_pair < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
-        //   }
-        // }
-        // if (nvar[Ent_pair][2] == -1){
-        //   tagint pair_right_tag = nvar[Ent_pair][3];
-        //   int pair_right = atom->map(pair_right_tag);
-        //   if (pair_right < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
-        //   if (nvar[pair_right][3] == -1) continue;    // do not disentangle single sub-chain chains
-        // }
-        // if (nvar[Ent_pair][3] == -1){
-        //   tagint pair_left_tag = nvar[Ent_pair][2];
-        //   int pair_left = atom->map(pair_left_tag);
-        //   if (pair_left < 0) error->one(FLERR,"some atom is too far away which shouldn't be");
-        //   if (nvar[pair_left][2] == -1) continue;    // do not disentangle single sub-chain chains
-        // }
-        dis_flag_local = 1;
-        break;
-      }
-    }
+    if (dis_flag_local) break;
   }
 
 
@@ -849,10 +725,6 @@ void FixEntangle::update_nvar(tagint id1, tagint id2){
 
   int local_id1 = atom->map(id1);
   int local_id2 = atom->map(id2);
-
-  // if (local_id1 < 0 || local_id2 < 0){
-  //   error->one(FLERR,"Fix entangle needs ghost atoms from further away");
-  // }
 
   for (int i = 0; i < nlocal; i++){
     if (tag[i] == id1 || tag[i] == id2) continue;
@@ -1063,7 +935,7 @@ void FixEntangle::update_topology()
       int i2 = atom->map(tag2);
 
       if (i1 < 0 || i2 < 0) {
-        error->one(FLERR,"Fix entangle needs ghost atoms "
+        error->one(FLERR,"Fix bond/dynamic needs ghost atoms "
                     "from further away");
       }
 
@@ -1090,7 +962,51 @@ void FixEntangle::update_topology()
     }
   }
 
+  for (int ilist = 0; ilist < neighbor->nlist; ilist++) {
+    NeighList *list = neighbor->lists[ilist];
+
+    // Skip copied lists, will update original
+    if (list->copy) continue;
+
+    int *numneigh = list->numneigh;
+    int **firstneigh = list->firstneigh;
+
+    for (auto const &it : new_created_pairs) {
+      tagint tag1 = it.first;
+      tagint tag2 = it.second;
+      int i1 = atom->map(tag1);
+      int i2 = atom->map(tag2);
+
+      if (i1 < 0 || i2 < 0) {
+        error->one(FLERR,"Fix entangle needs ghost atoms "
+                    "from further away");
+      }
+
+      // Loop through atoms of owned atoms i j
+      if (i1 < nlocal) {
+        int *jlist = firstneigh[i1];
+        int jnum = numneigh[i1];
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          if (((j >> SBBITS) & 3) != 0) continue;               // Skip bonded pairs
+          if (tag[j] == tag2) jlist[jj] = j ^ (1 << SBBITS);    // Add 1-2 special bond bits
+        }
+      }
+
+      if (i2 < nlocal) {
+        int *jlist = firstneigh[i2];
+        int jnum = numneigh[i2];
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          if (((j >> SBBITS) & 3) != 0) continue;               // Skip bonded pairs
+          if (tag[j] == tag1) jlist[jj] = j ^ (1 << SBBITS);    // Add 1-2 special bond bits
+        }
+      }
+    }
+  }
+
   new_broken_pairs.clear();
+  new_created_pairs.clear();
 
 }
 
