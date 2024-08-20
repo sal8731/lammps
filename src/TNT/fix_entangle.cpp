@@ -285,7 +285,7 @@ void FixEntangle::pre_exchange(){
   atom->nghost = 0;
   comm->borders();
 
-  if (0){
+  // if (0){
 
   // entanglement creation part (IT IS GONNA BE DONE THIS TIME)
 
@@ -308,7 +308,7 @@ void FixEntangle::pre_exchange(){
 
     if (reach_radius == 0) continue; // continue to next particle if particle "i" is not a dangling end
 
-    if (dang_end_monomer < 300) continue;
+    if (dang_end_monomer < 3000) continue;
 
     // printf("\n\nDANG END MONOMER OF PARTICLE %d = %f\n\n",tag[i],dang_end_monomer);
 
@@ -1018,7 +1018,7 @@ void FixEntangle::pre_exchange(){
 
 
 
-  }
+  // }
 
 
   /*--------------------------------------------------------------------------------------------------*/
