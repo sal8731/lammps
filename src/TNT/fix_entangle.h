@@ -58,7 +58,7 @@ class FixEntangle : public Fix {
   double b;
 
   void process_broken(int, int);
-  void process_created(int, int);
+  void process_created(int, int, int);
   void update_nvar(tagint, tagint);
   void update_special();
   void update_topology();
@@ -80,8 +80,9 @@ class FixEntangle : public Fix {
   void init_myarray();
 private:
 
-   
+   void find_maxid();
    int ilevel_respa;
+   tagint maxtag_all;
 
 };
 
