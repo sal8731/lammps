@@ -13,21 +13,21 @@
 
 #ifdef FIX_CLASS
 // clang-format off
-FixStyle(entangle,FixEntangle);
+FixStyle(slidering,FixSlidering);
 // clang-format on
 #else
 
-#ifndef LMP_FIX_ENTANGLE_H
-#define LMP_FIX_ENTANGLE_H
+#ifndef LMP_FIX_SLIDERING_H
+#define LMP_FIX_SLIDERING_H
 
 #include "fix.h"
 
 namespace LAMMPS_NS {
 
-class FixEntangle : public Fix {
+class FixSlidering : public Fix {
  public:
-  FixEntangle(class LAMMPS *, int, char **);
-  virtual ~FixEntangle();
+  FixSlidering(class LAMMPS *, int, char **);
+  virtual ~FixSlidering();
   int setmask();
   void post_constructor();
   void init();
