@@ -12,7 +12,7 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
-#include "fix_entangle.h"
+#include "fix_slidering.h"
 
 #include "atom.h"
 #include "atom_vec.h"
@@ -48,7 +48,7 @@ using namespace FixConst;
 
 /* ---------------------------------------------------------------------- */
 
-FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
+FixSlidering::FixSlidering(LAMMPS *lmp, int narg, char **arg) :
   Fix(lmp, narg, arg), nu(nullptr), N_rest(nullptr), N_0(nullptr), random(nullptr)
 {
 
@@ -106,7 +106,7 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
   dis_flag = 0;
 
   // for allocating space to array_atom
-  FixEntangle::grow_arrays(atom->nmax);
+  FixSlidering::grow_arrays(atom->nmax);
   atom->add_callback(Atom::GROW);
 
   if (peratom_flag) {
@@ -119,7 +119,7 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
 
 /* ---------------------------------------------------------------------- */
 
-FixEntangle::~FixEntangle()
+FixSlidering::~FixSlidering()
 {
   // delete random number
   delete random;
@@ -136,7 +136,7 @@ FixEntangle::~FixEntangle()
 
 /* ---------------------------------------------------------------------- */
 
-int FixEntangle::setmask()
+int FixSlidering::setmask()
 {
   int mask = 0;
   mask |= PRE_EXCHANGE;
@@ -146,7 +146,7 @@ int FixEntangle::setmask()
 
 /* ---------------------------------------------------------------------- */
 
-void FixEntangle::post_constructor()
+void FixSlidering::post_constructor()
 {
 
   // CREATE A CALL TO FIX PROPERTY/ATOM //
@@ -165,7 +165,7 @@ void FixEntangle::post_constructor()
 
 /* ---------------------------------------------------------------------- */
 
-void FixEntangle::init()
+void FixSlidering::init()
 {
 
   // Only run this in the beginning of simulation (transferring nvar data from velocities to actual peratom array)
@@ -238,7 +238,7 @@ void FixEntangle::init()
 
 /* ---------------------------------------------------------------------- */
 
-void FixEntangle::setup(int vflag)
+void FixSlidering::setup(int vflag)
 {
   pre_force(vflag);
 }
@@ -248,7 +248,7 @@ void FixEntangle::setup(int vflag)
   done before exchange, borders, reneighbor
   so that ghost atoms and neighbor lists will be correct
 ------------------------------------------------------------------------- */
-void FixEntangle::pre_exchange(){
+void FixSlidering::pre_exchange(){
 
   // if (update->ntimestep > 100000) return;
   return;
@@ -1211,7 +1211,7 @@ void FixEntangle::pre_exchange(){
 
 /* ---------------------------------------------------------------------- */
 
- void FixEntangle::pre_force(int vflag)
+ void FixSlidering::pre_force(int vflag)
 { 
   // return;
   // Main part of code
@@ -1589,7 +1589,7 @@ void FixEntangle::pre_exchange(){
 
 /* ---------------------------------------------------------------------- */
 
-void FixEntangle::update_nvar(tagint id1, tagint id2){
+void FixSlidering::update_nvar(tagint id1, tagint id2){
 
 
   int nlocal = atom->nlocal;
@@ -1656,7 +1656,7 @@ void FixEntangle::update_nvar(tagint id1, tagint id2){
 
 /* ---------------------------------------------------------------------- */
 
-void FixEntangle::process_broken(int i, int j)
+void FixSlidering::process_broken(int i, int j)
 {
 
  // First add the pair to new_broken_pairs
@@ -1740,7 +1740,7 @@ void FixEntangle::process_broken(int i, int j)
 
 /* --------------------------------------------------------------------- */
 
-void FixEntangle::process_created(int i, int j, int n)
+void FixSlidering::process_created(int i, int j, int n)
 {
 
   // First add the pair to new_created_pairs
@@ -1802,7 +1802,7 @@ void FixEntangle::process_created(int i, int j, int n)
       neighbor->add_temporary_bond(i1, i2, btype);
 ------------------------------------------------------------------------- */
 
-void FixEntangle::update_topology()
+void FixSlidering::update_topology()
 {
 
   int nlocal = atom->nlocal;
@@ -1906,7 +1906,7 @@ void FixEntangle::update_topology()
    maxtag_all = current max atom ID for all atoms
 ------------------------------------------------------------------------- */
 
-void FixEntangle::find_maxid()
+void FixSlidering::find_maxid()
 {
   tagint *tag = atom->tag;
   int nlocal = atom->nlocal;
@@ -1920,7 +1920,7 @@ void FixEntangle::find_maxid()
    allocate local atom-based arrays
 ------------------------------------------------------------------------- */
 
-void FixEntangle::grow_arrays(int nmax)
+void FixSlidering::grow_arrays(int nmax)
 {
   if (peratom_flag) {
     memory->grow(array_atom,nmax,size_peratom_cols,"fix_entangle:array_atom");
@@ -1928,7 +1928,7 @@ void FixEntangle::grow_arrays(int nmax)
 }
 /* ---------------------------------------------------------------------- */
 
-void FixEntangle::init_myarray()
+void FixSlidering::init_myarray()
 {
   const int nlocal = atom->nlocal;
   for (int i = 0; i < nlocal; i++) {
@@ -1942,7 +1942,7 @@ void FixEntangle::init_myarray()
  copy values within local atom-based arrays
 ----------------------------------------------------------------- */
 
-void FixEntangle::copy_arrays(int i, int j, int delflag)
+void FixSlidering::copy_arrays(int i, int j, int delflag)
 {
   if (peratom_flag) {
     for (int m = 0; m < size_peratom_cols; m++)
@@ -1953,7 +1953,7 @@ void FixEntangle::copy_arrays(int i, int j, int delflag)
    initialize one atom's array values, called when atom is created
 ------------------------------------------------------------------------- */
 
-void FixEntangle::set_arrays(int i)
+void FixSlidering::set_arrays(int i)
 {
   if (peratom_flag) {
     for (int m = 0; m < size_peratom_cols; m++)
@@ -1963,7 +1963,7 @@ void FixEntangle::set_arrays(int i)
 /* ---------------------------------------------------------------------- */
 
 // THIS IS WHERE WE DEFINE COMMUNICATION //
-int FixEntangle::pack_forward_comm(int n, int *list, double *buf,
+int FixSlidering::pack_forward_comm(int n, int *list, double *buf,
                                     int /*pbc_flag*/, int * /*pbc*/)
 {
   int i,j,k,m,ns;
@@ -2021,7 +2021,7 @@ int FixEntangle::pack_forward_comm(int n, int *list, double *buf,
 
 // THIS IS THE OPPOSITE OF THE PREVIOUS SCRIPT //
 // ALWAYS NEED TO DEFINE BOTH PACKING AND UNPACKING //
-void FixEntangle::unpack_forward_comm(int n, int first, double *buf)
+void FixSlidering::unpack_forward_comm(int n, int first, double *buf)
 {
   int i,j,m,ns,last;
 
@@ -2053,7 +2053,7 @@ void FixEntangle::unpack_forward_comm(int n, int first, double *buf)
 
 /* ---------------------------------------------------------------------- */
 
-int FixEntangle::pack_reverse_comm(int n, int first, double *buf)
+int FixSlidering::pack_reverse_comm(int n, int first, double *buf)
 {
   int i,m,last;
 
@@ -2082,7 +2082,7 @@ int FixEntangle::pack_reverse_comm(int n, int first, double *buf)
 
 /* ---------------------------------------------------------------------- */
 
-void FixEntangle::unpack_reverse_comm(int n, int *list, double *buf)
+void FixSlidering::unpack_reverse_comm(int n, int *list, double *buf)
 {
   int i,j,m;
 
@@ -2111,7 +2111,7 @@ void FixEntangle::unpack_reverse_comm(int n, int *list, double *buf)
    memory usage of local atom-based arrays
 ------------------------------------------------------------------------- */
 
-double FixEntangle::memory_usage()
+double FixSlidering::memory_usage()
 {
   int nmax = atom->nmax;
   double bytes = 2*nmax * sizeof(double);
