@@ -106,7 +106,7 @@ FixSlidering::FixSlidering(LAMMPS *lmp, int narg, char **arg) :
   next_reneighbor = update->ntimestep + 1;
   dis_flag = 0;
 
-  // for allocating space to array_atom
+  // for allocating space to array_atom for fix slidering
   FixSlidering::grow_arrays(atom->nmax);
   atom->add_callback(Atom::GROW);
 
