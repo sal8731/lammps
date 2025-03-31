@@ -68,6 +68,9 @@ FixEntangle::FixEntangle(LAMMPS *lmp, int narg, char **arg) :
   b = utils::numeric(FLERR,arg[6],false,lmp);
   if (b <= 0) error->all(FLERR,"Illegal fix entangle command - Kuhn length should be greater than 0");
 
+  p_crosslink = utils::numeric(FLERR,arg[7],false,lmp);
+  if (p_crosslink < 0 ||  p_crosslink > 1) error->all(FLERR,"Illegal fix entangle command - crosslinked ratio should be between 0 and 1");
+
   // SOME FLAGS... worry about later //
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world,&nprocs);
@@ -1290,7 +1293,7 @@ void FixEntangle::pre_exchange(){
 
   if (update->ntimestep == 0){
 
-    double Crosslinked_p = 0.0;
+    double Crosslinked_p = p_crosslink;
 
     int Crosslinked_n = floor(nlocal * Crosslinked_p);
     int Actualy_Crosslinked = 0;
