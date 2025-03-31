@@ -223,11 +223,11 @@ void FixEntangle::init()
   }
 
   for (int i = 0; i < nlocal; i++){
-    if (nvar[i][2] == -1) nvar[i][0] = 300;
-    if (nvar[i][3] == -1) nvar[i][1] = 300;
+    if (nvar[i][2] == -1) nvar[i][0] = 150;
+    if (nvar[i][3] == -1) nvar[i][1] = 150;
 
-    if (nvar[i][2] != -1) nvar[i][0] = 200;
-    if (nvar[i][3] != -1) nvar[i][1] = 200;
+    if (nvar[i][2] != -1) nvar[i][0] = 150;
+    if (nvar[i][3] != -1) nvar[i][1] = 150;
   }
 
   // forward communicate of nvar so ghost atoms acquire their nvar
@@ -250,10 +250,10 @@ void FixEntangle::setup(int vflag)
 ------------------------------------------------------------------------- */
 void FixEntangle::pre_exchange(){
 
-  // if (update->ntimestep > 100000) return;
-  // return;
+  // if (update->ntimestep < 400000) return;
 
   
+
   // local atom count
   int nlocal = atom->nlocal;
   int nghost = atom->nghost;
@@ -280,12 +280,8 @@ void FixEntangle::pre_exchange(){
   // atom positions
   double **x = atom->x;
 
-  domain->pbc();
-  comm->exchange();
-  atom->nghost = 0;
-  comm->borders();
-
-  // if (0){
+  double critical_dang_end = 400;
+  if (0){
 
   // entanglement creation part (IT IS GONNA BE DONE THIS TIME)
 
@@ -299,16 +295,14 @@ void FixEntangle::pre_exchange(){
     if (nvar[i][2] == -1) {
       reach_radius = b * nvar[i][0];
       dang_end_monomer = nvar[i][0];
-    }
-
-    if (nvar[i][3] == -1) {
+    } else if (nvar[i][3] == -1) {
       reach_radius = b * nvar[i][1];
       dang_end_monomer = nvar[i][1];
     }
 
     if (reach_radius == 0) continue; // continue to next particle if particle "i" is not a dangling end
 
-    if (dang_end_monomer < 3000) continue;
+    if (dang_end_monomer <= critical_dang_end) continue;
 
     // printf("\n\nDANG END MONOMER OF PARTICLE %d = %f\n\n",tag[i],dang_end_monomer);
 
@@ -317,16 +311,21 @@ void FixEntangle::pre_exchange(){
     // loop over bondlist to find bonds that have their heads inside reach radius of particle "i"
 
     for (int j = 0; j < nbondlist; j++){
-      int i1 = bondlist[j][0];
+      int i1_tmp = bondlist[j][0];
       int i2_tmp = bondlist[j][1];
       int type = bondlist[j][2];
 
       if (type == 2) continue;  // do not consider type 2 bonds (entanglement bonds)
-      if (i1 == i || i2_tmp == i) continue; // do not consider the previous segment to that dangling end
+      if (i1_tmp == i || i2_tmp == i) continue; // do not consider the previous segment to that dangling end
 
-      int i2 = domain->closest_image(i1,i2_tmp);  
+      int i2 = domain->closest_image(i,i2_tmp);
+      int i1 = domain->closest_image(i,i1_tmp);    
 
-      if (((nvar[i1][2] == tag[i2] || nvar[i1][3] == tag[i2]) && (nvar[i2][2] == tag[i1] || nvar[i2][3] == tag[i1]))== 0){
+      // if (((nvar[i1][2] == tag[i2] || nvar[i1][3] == tag[i2]) && (nvar[i2][2] == tag[i1] || nvar[i2][3] == tag[i1]))== 0){
+      //   continue;
+      // }
+
+      if (((nvar[i1][2] == tag[i2] && nvar[i2][3] == tag[i1]) || (nvar[i1][3] == tag[i2] && nvar[i2][2] == tag[i1]))== 0){
         continue;
       }
 
@@ -393,6 +392,9 @@ void FixEntangle::pre_exchange(){
       nvar[i][7] = y_midpoint;
       nvar[i][8] = z_midpoint;
     }
+
+    // creating only one entanglement per timestep
+    break;
   }
 
   commflag = 1;
@@ -404,6 +406,11 @@ void FixEntangle::pre_exchange(){
 
   // clear ghost count (and atom map) and any ghost bonus data
   // do it now b/c inserting atoms will overwrite ghost atoms
+
+  domain->pbc();
+  comm->exchange();
+  atom->nghost = 0;
+  comm->borders();
 
   if (atom->map_style != Atom::MAP_NONE) atom->map_clear();
   atom->nghost = 0;
@@ -428,6 +435,9 @@ void FixEntangle::pre_exchange(){
       double Xmid[3] = {x_mid, y_mid , z_mid};
 
       domain->remap(Xmid);
+
+      if (!domain->inside(Xmid))
+      error->one(FLERR,"Fix Entangle put atom outside box");
 
       x_mid = Xmid[0];
       y_mid = Xmid[1];
@@ -465,7 +475,11 @@ void FixEntangle::pre_exchange(){
           x_ent1[1] = y_mid + 0.1 * sqrt(1 - rand1 * rand1);
           x_ent1[2] = z_mid;
 
-          domain->remap(x_ent1);
+          imageint img1;
+          img1 = (((imageint) IMGMAX << IMG2BITS) | ((imageint) IMGMAX << IMGBITS) | IMGMAX);
+
+
+          domain->remap(x_ent1,img1);
 
           if (x_ent1[0] > sublo[0] && x_ent1[0] < subhi[0] &&
             x_ent1[1] > sublo[1] && x_ent1[1] < subhi[1] &&
@@ -479,11 +493,20 @@ void FixEntangle::pre_exchange(){
           x_ent2[1] = y_mid + 0.1 * sqrt(1 - rand2 * rand2);
           x_ent2[2] = z_mid;
 
-          domain->remap(x_ent2);
+          imageint img2;
+          img2 = (((imageint) IMGMAX << IMG2BITS) | ((imageint) IMGMAX << IMGBITS) | IMGMAX);
+
+          domain->remap(x_ent2,img2);
 
           if (x_ent2[0] > sublo[0] && x_ent2[0] < subhi[0] &&
             x_ent2[1] > sublo[1] && x_ent2[1] < subhi[1] &&
             x_ent2[2] > sublo[2] && x_ent2[2] < subhi[2]) IN_flag_ent2 = 1;
+        }
+
+        double dist_of_ents = sqrt((x_ent1[0]-x_ent2[0])*(x_ent1[0]-x_ent2[0]) + (x_ent1[1]-x_ent2[1])*(x_ent1[1]-x_ent2[1]) + (x_ent1[2]-x_ent2[2])*(x_ent1[2]-x_ent2[2]));
+        if (dist_of_ents < 0.1){
+          IN_flag_ent1 == 0;
+          IN_flag_ent2 == 0;
         }
       }
 
@@ -552,18 +575,12 @@ void FixEntangle::pre_exchange(){
   if (atom->tag_enable) atom->tag_extend();
   atom->tag_check();
 
-  if (update->ntimestep > 6143) {
-    //printf("\n\n   atoms just created (PROC %d and TIMESTEP %ld) : %d & %d \n\n",me,update->ntimestep,tag[nlocal-1],tag[nlocal-2]);
-  }
-
   // rebuild atom map
   if (atom->map_style != Atom::MAP_NONE) {
     atom->map_init();
     atom->map_set();
   }
 
-  // domain->pbc();
-  // comm->exchange();
   atom->nghost = 0;
   comm->borders();
 
@@ -585,14 +602,9 @@ void FixEntangle::pre_exchange(){
   comm->forward_comm(this,10);
 
 
-
-  if (update->ntimestep > 1630){
-    //printf("\n\n        !!!!       PROCESSOR %d HASTAM ba %d ATOM OWNEDN AND %d GHOST   !!!!          \n\n",me,nlocal,nghost);
-    //printf("\n\nPROCESSOR %d with nlocal %d -- atom %d with tag %d with nvar = [%f %f %f %f ...]\n",me,nlocal,800,tag[800],nvar[800][0],nvar[800][1],nvar[800][2],nvar[800][3]);
-  }
+  // int *num_bond = atom->num_bond;
 
   // Loop to find newly created pairs and create bond "type 2" between them
-
   for (int j = 0; j < nlocal; j++){
     
     tagint anchor_point_tag = 0;
@@ -607,6 +619,11 @@ void FixEntangle::pre_exchange(){
       if (nvar[j][2] == -1 || nvar[j][3] == -1){
 
         new_ent1 = j;
+
+        if (num_bond[new_ent1] != 0){
+           printf("\n\nBEGAYI KHORDIM\n\n");      // double checking
+        }
+
         // printf("\nNEWLY CREATED IS PARTICLE %d (tag %d) (PROC %d || timestep : %ld)\n",new_ent1,tag[new_ent1],me,update->ntimestep);
         // printf("\nNVAR OF PARTICLE %d = [%f  %f  %f  %f]\n",tag[new_ent1],nvar[new_ent1][0],nvar[new_ent1][1],nvar[new_ent1][2],nvar[new_ent1][3]);
         // printf("\nPosition of particle %d = [%f %f %f]\n",tag[new_ent1],atom->x[new_ent1][0],atom->x[new_ent1][1],atom->x[new_ent1][2]);
@@ -639,6 +656,8 @@ void FixEntangle::pre_exchange(){
     tagint dest1_tag = nvar[anchor_point][4];
     tagint dest2_tag = nvar[anchor_point][5];
 
+    if (dest1_tag == 0 || dest2_tag == 0) error->one(FLERR,"\nProblematic NVAR!!!\n");
+
     int dest1_tmp = atom->map(dest1_tag);
     int dest2_tmp = atom->map(dest2_tag);
 
@@ -652,21 +671,17 @@ void FixEntangle::pre_exchange(){
       if (nvar[anchor_point][2] == -1){
         nvar[new_ent1][0] = nvar[anchor_point][0]/2;
         nvar[new_ent1][1] = nvar[anchor_point][0]/2;
-        // printf("FUCK MY LIFE 111\n\n");
       } else if (nvar[anchor_point][3] == -1){
         nvar[new_ent1][0] = nvar[anchor_point][1]/2;
         nvar[new_ent1][1] = nvar[anchor_point][1]/2;
-        // printf("FUCK MY LIFE 111\n\n");
       }
     } else if (nvar[new_ent1][3] == -1){
       if (nvar[anchor_point][2] == -1){
         nvar[new_ent1][0] = nvar[anchor_point][0]/2;
         nvar[new_ent1][1] = nvar[anchor_point][0]/2;
-        // printf("FUCK MY LIFE 111\n\n");
       } else if (nvar[anchor_point][3] == -1){
         nvar[new_ent1][0] = nvar[anchor_point][1]/2;
         nvar[new_ent1][1] = nvar[anchor_point][1]/2;
-        // printf("FUCK MY LIFE 111\n\n");
       }
     }
     
@@ -683,9 +698,9 @@ void FixEntangle::pre_exchange(){
     }
 
     // calculate the number of monomers in destination sub-chain
-// printf("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!! (PROC %d) BEGIN THIS MTF CASE !!!!!!!!!!!!!!!!!!!!!\n\n",me);
-//     printf("\n\nnvar of dest1 %d (tag %d)= [%f %f %f %f ...]\n\n",dest1,tag[dest1],nvar[dest1][0],nvar[dest1][1],nvar[dest1][2],nvar[dest1][3]);
-//      printf("\n\nnvar of dest2 %d (tag %d)= [%f %f %f %f ...]\n\n",dest2,tag[dest2],nvar[dest2][0],nvar[dest2][1],nvar[dest2][2],nvar[dest2][3]);
+    // printf("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!! (PROC %d) BEGIN THIS CASE !!!!!!!!!!!!!!!!!!!!!\n\n",me);
+    //     printf("\n\nnvar of dest1 %d (tag %d)= [%f %f %f %f ...]\n\n",dest1,tag[dest1],nvar[dest1][0],nvar[dest1][1],nvar[dest1][2],nvar[dest1][3]);
+    //      printf("\n\nnvar of dest2 %d (tag %d)= [%f %f %f %f ...]\n\n",dest2,tag[dest2],nvar[dest2][0],nvar[dest2][1],nvar[dest2][2],nvar[dest2][3]);
     double shared_monomers = 0;
     if (nvar[dest1][2] == dest2_tag){
       // printf("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!! (PROC %d)  THIS MTF CASE !!!!!!!!!!!!!!!!!!!!!\n\n",me);
@@ -700,7 +715,7 @@ void FixEntangle::pre_exchange(){
     nvar[new_ent2][0] = shared_monomers / 2;
     nvar[new_ent2][1] = shared_monomers / 2;
 
-    // printf("\nBOND DORWST SHODDDDDDDDDDDDDDDDDDDDD BEINE %d & %d (tag %d & %d)\n",new_ent1,new_ent2,tag[new_ent1],tag[new_ent2]);
+    // printf("\nBOND CREATED BETWEEN %d & %d (tag %d & %d)\n",new_ent1,new_ent2,tag[new_ent1],tag[new_ent2]);
 
     process_created(new_ent1,new_ent2,2);
 
@@ -723,7 +738,6 @@ void FixEntangle::pre_exchange(){
   commflag = 1;
   comm->forward_comm(this,10);
 
-  //printf("FUCK MY LIFE 222\n\n");
 
   update_topology();
 
@@ -1012,14 +1026,7 @@ void FixEntangle::pre_exchange(){
 
   // DO NOT CONTINUE TO DISENTANGLEMENT (TEMPORARY FOR NOW)
   //return;
-
-
-
-
-
-
-  // }
-
+  }
 
   /*--------------------------------------------------------------------------------------------------*/
 
@@ -1150,7 +1157,6 @@ void FixEntangle::pre_exchange(){
   }
 
   if (atom->map_style != Atom::MAP_NONE)  atom->map_init();
-  // atom->natoms -= 2;
   
 
   domain->pbc();
@@ -1218,7 +1224,6 @@ void FixEntangle::pre_exchange(){
 
  void FixEntangle::pre_force(int vflag)
 { 
-  // return;
   // Main part of code
   // ATOM COUNTS
   int nlocal = atom->nlocal;
@@ -1285,45 +1290,45 @@ void FixEntangle::pre_exchange(){
 
   if (update->ntimestep == 0){
 
-    double Crosslinked_p = 0.5;
+    double Crosslinked_p = 0.0;
 
     int Crosslinked_n = floor(nlocal * Crosslinked_p);
     int Actualy_Crosslinked = 0;
     
-    // for (int i = 0; i < nlocal; i++){
-      // if (Actualy_Crosslinked >= Crosslinked_n) break;
-      // if (nvar[i][9] == -1) continue;
+    for (int i = 0; i < nlocal; i++){
+      if (Actualy_Crosslinked >= Crosslinked_n) break;
+      if (nvar[i][9] == -1) continue;
 
-      // int i1 = i;
-      // int tag_i2 = 0;
-      // for (int j = 0; j < num_bond[i1]; j++){
-      //   if (bond_type[i1][j] == 2){
-      //     tag_i2 = bond_atom[i1][j];
-      //   }
-      // }
+      int i1 = i;
+      int tag_i2 = 0;
+      for (int j = 0; j < num_bond[i1]; j++){
+        if (bond_type[i1][j] == 2){
+          tag_i2 = bond_atom[i1][j];
+        }
+      }
 
-      // if (tag_i2 == 0) error->one(FLERR,"Not found the ent pair");
+      if (tag_i2 == 0) error->one(FLERR,"Not found the ent pair");
     
-      // int i2 = atom->map(tag_i2);
+      int i2 = atom->map(tag_i2);
 
-      // if (i2 < 0) error->one(FLERR,"Not found the ent pair");
-      // if (i1 == i2) error->one(FLERR,"Wrong topology data");
+      if (i2 < 0) error->one(FLERR,"Not found the ent pair");
+      if (i1 == i2) error->one(FLERR,"Wrong topology data");
 
-      // if (i1 < nlocal && i2 < nlocal){
-      //   nvar[i1][9] = -1;
-      //   nvar[i2][9] = -1;
-      //   Actualy_Crosslinked = Actualy_Crosslinked + 2;
-      // }
+      if (i1 < nlocal && i2 < nlocal){
+        nvar[i1][9] = -1;
+        nvar[i2][9] = -1;
+        Actualy_Crosslinked = Actualy_Crosslinked + 2;
+      }
   
-    // }
+    }
     // for (int i = 0; i < nlocal; i++){
     //   if (nvar[i][2] == -1 || nvar[i][3] == -1) nvar[i][9] = -1;
     // }
 
-    // printf("\n\nCrosslinked count 1: %d   (Proc %d & nlocal = %d) \n\n", Actualy_Crosslinked,me,nlocal);
-    // reverse communication of nvar so ghost atoms get flagged if they are locked covalent crosslinks
-    // commflag = 1;
-    // comm->forward_comm(this,10);
+    printf("\n\nCrosslinked count 1: %d   (Proc %d & nlocal = %d) \n\n", Actualy_Crosslinked,me,nlocal);
+    // forward communication of nvar so ghost atoms get flagged if they are locked covalent crosslinks
+    commflag = 1;
+    comm->forward_comm(this,10);
 
     int ghofl = 0;
     for (int i = 0; i < nlocal; i++){
@@ -1530,7 +1535,7 @@ void FixEntangle::pre_exchange(){
   comm->reverse_comm(this,2);
   
   // actual sliding part
-  if (update->ntimestep > 800000){
+  if (update->ntimestep > 400000){
     for (int j = 0; j < nlocal; j++) {
       nvar[j][0] = nvar[j][0] + nu[j][0] * update->dt;
       nvar[j][1] = nvar[j][1] + nu[j][1] * update->dt;
